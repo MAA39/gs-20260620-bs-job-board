@@ -12,41 +12,16 @@ async function getApi() {
   }
 }
 
-const fetchDetail = createServerFn({ method: 'GET' })
-  .validator((input: { id: string }) => input)
-  .handler(async ({ data }) => {
-    const api = await getApi();
-    const res = await api(`/api/v1/threads/${data.id}`);
-    if (!res.ok) throw new Error('not found');
-    return (await res.json()) as ThreadDetail;
-  });
+const fetchDetail = createServerFn({ method: 'GET' }).validator((i: { id: string }) => i)
+  .handler(async ({ data }) => { const api = await getApi(); const r = await api(`/api/v1/threads/${data.id}`); if (!r.ok) throw new Error('not found'); return (await r.json()) as ThreadDetail; });
 
-const addComment = createServerFn({ method: 'POST' })
-  .validator((input: { threadId: string; body: string }) => input)
-  .handler(async ({ data }) => {
-    const api = await getApi();
-    await api(`/api/v1/threads/${data.threadId}/posts`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ author_type: 'human', author_name: '名無しさん', role: null, body: data.body }),
-    });
-  });
+const addComment = createServerFn({ method: 'POST' }).validator((i: { threadId: string; body: string }) => i)
+  .handler(async ({ data }) => { const api = await getApi(); await api(`/api/v1/threads/${data.threadId}/posts`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ author_type: 'human', author_name: '名無しさん', role: null, body: data.body }) }); });
 
-const fixThread = createServerFn({ method: 'POST' })
-  .validator((input: { threadId: string; status: string }) => input)
-  .handler(async ({ data }) => {
-    const api = await getApi();
-    await api(`/api/v1/threads/${data.threadId}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status: data.status }),
-    });
-  });
+const fixThread = createServerFn({ method: 'POST' }).validator((i: { threadId: string; status: string }) => i)
+  .handler(async ({ data }) => { const api = await getApi(); await api(`/api/v1/threads/${data.threadId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: data.status }) }); });
 
-export const Route = createFileRoute('/threads/$id')({
-  loader: ({ params }) => fetchDetail({ data: { id: params.id } }),
-  component: ThreadDetailPage,
-});
+export const Route = createFileRoute('/threads/$id')({ loader: ({ params }) => fetchDetail({ data: { id: params.id } }), component: ThreadDetailPage });
 
 function ThreadDetailPage() {
   const initial = Route.useLoaderData();
@@ -56,82 +31,65 @@ function ThreadDetailPage() {
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => { setThread(initial); }, [initial]);
-  useEffect(() => {
-    const poll = setInterval(async () => {
-      try { setThread(await fetchDetail({ data: { id: params.id } })); } catch {}
-    }, 5000);
-    return () => clearInterval(poll);
-  }, [params.id]);
+  useEffect(() => { const p = setInterval(async () => { try { setThread(await fetchDetail({ data: { id: params.id } })); } catch {} }, 5000); return () => clearInterval(p); }, [params.id]);
 
   const handleComment = useCallback(async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!comment.trim()) return;
-    setSubmitting(true);
-    try {
-      await addComment({ data: { threadId: params.id, body: comment.trim() } });
-      setComment('');
-      setThread(await fetchDetail({ data: { id: params.id } }));
-    } finally { setSubmitting(false); }
+    e.preventDefault(); if (!comment.trim()) return; setSubmitting(true);
+    try { await addComment({ data: { threadId: params.id, body: comment.trim() } }); setComment(''); setThread(await fetchDetail({ data: { id: params.id } })); }
+    finally { setSubmitting(false); }
   }, [comment, params.id]);
 
   const handleFix = useCallback(async () => {
-    const next = thread.status === 'fixed' ? 'open' : 'fixed';
-    await fixThread({ data: { threadId: params.id, status: next } });
+    await fixThread({ data: { threadId: params.id, status: thread.status === 'fixed' ? 'open' : 'fixed' } });
     setThread(await fetchDetail({ data: { id: params.id } }));
   }, [thread.status, params.id]);
 
-  const aiPosts = thread.posts.filter(p => p.author_type === 'ai' && p.role !== 'thinking');
   const regularPosts = thread.posts.filter(p => p.role !== 'thinking');
   const thinkPosts = thread.posts.filter(p => p.role === 'thinking');
 
   return (
     <div>
-      <Link to="/" style={{ color: '#666', textDecoration: 'none', fontSize: '0.9rem' }}>← 一覧に戻る</Link>
+      <Link to="/" style={{ color: '#555041', textDecoration: 'none', fontSize: '0.9rem' }}>← 一覧に戻る</Link>
 
       <div className="card" style={{ marginTop: '8px' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-          <h2 style={{ flex: 1 }}>{thread.title}</h2>
-          <button
-            onClick={handleFix}
-            style={{
-              background: thread.status === 'fixed' ? '#e8f5e9' : '#fff3e0',
-              color: thread.status === 'fixed' ? '#2e7d32' : '#e65100',
-              border: `1px solid ${thread.status === 'fixed' ? '#a5d6a7' : '#ffcc80'}`,
-              padding: '4px 12px', fontSize: '0.8rem', marginLeft: '8px', whiteSpace: 'nowrap',
-            }}
-          >
+          <div style={{ flex: 1 }}>
+            <p className="eyebrow">Thread detail</p>
+            <h2 style={{ fontFamily: 'Georgia, serif', fontSize: '1.4rem', marginTop: '4px' }}>{thread.title}</h2>
+          </div>
+          <button className="status-btn" onClick={handleFix} style={{ background: thread.status === 'fixed' ? '#eef5ef' : '#fffaf0' }}>
             {thread.status === 'fixed' ? '✅ 整理完了' : '🔓 議論中'}
           </button>
         </div>
-        <p style={{ color: '#666', marginTop: '4px', fontSize: '0.95rem' }}>{thread.body}</p>
       </div>
 
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', margin: '16px 0 8px' }}>
-        <h3>レス</h3>
-        <span style={{ color: '#999', fontSize: '0.8rem' }}>{regularPosts.length}件 · 5秒で自動更新</span>
+      <div className="section-header">
+        <span>Posts</span>
+        <span>{regularPosts.length}件 · 5秒で自動更新</span>
       </div>
 
       {regularPosts.map((post) => (
-        <div key={post.id} className="post">
+        <div key={post.id} className={`post ${post.author_type === 'ai' ? 'post-ai' : ''}`}>
           <div className="post-header">
-            <strong>#{post.post_number}</strong> {post.author_name}
+            <strong>{post.post_number}</strong>
+            <span>{post.author_name}</span>
           </div>
-          <div style={{ marginTop: '6px', whiteSpace: 'pre-wrap' }}>{post.body}</div>
+          <div className="post-body">{post.body}</div>
         </div>
       ))}
 
       {thinkPosts.map((post) => (
-        <details key={post.id} className="post" style={{ fontSize: '0.8rem', color: '#888', borderLeftColor: '#eee', cursor: 'pointer' }}>
-          <summary style={{ padding: '8px 0' }}>🤔 AIの思考過程（タップで展開）</summary>
-          <div style={{ marginTop: '6px', whiteSpace: 'pre-wrap' }}>{post.body}</div>
+        <details key={post.id} className="thinking">
+          <summary>🤔 AIの思考過程（タップで展開）</summary>
+          <div style={{ marginTop: '8px', whiteSpace: 'pre-wrap' }}>{post.body}</div>
         </details>
       ))}
 
       <div className="card" style={{ marginTop: '16px' }}>
-        <h3 style={{ marginBottom: '8px' }}>💬 レスする（AIも反応するよ）</h3>
-        <form onSubmit={handleComment}>
-          <textarea value={comment} onChange={e => setComment(e.target.value)} placeholder="「うちもそう」「なんでそれ続いてるん？」..." required style={{ minHeight: '80px' }} />
-          <button type="submit" disabled={submitting}>{submitting ? '投稿中...' : 'レスする'}</button>
+        <p className="eyebrow">Reply</p>
+        <form onSubmit={handleComment} style={{ marginTop: '8px' }}>
+          <input value={comment} onChange={e => setComment(e.target.value)} placeholder="名無しさんとしてレスを書く" required />
+          <button type="submit" disabled={submitting}>{submitting ? '送信中...' : 'レスする'}</button>
         </form>
       </div>
     </div>
