@@ -136,3 +136,116 @@ export const threadRoutes = new Hono<{ Bindings: Bindings }>()
     await updateThreadStatus(c.env.DB, threadId, status);
     return c.json({ id: threadId, status });
   });
+
+  // SSEストリーミング: AIレス生成をリアルタイムで返す
+  .post('/:id/ai-stream', async (c) => {
+    const threadId = c.req.param('id');
+    const thread = await c.env.DB.prepare('SELECT title FROM threads WHERE id = ?').bind(threadId).first<{ title: string }>();
+    if (!thread) return c.json({ error: 'not found' }, 404);
+
+    const existingPosts = await c.env.DB.prepare(
+      'SELECT post_number, author_name, body, author_type FROM posts WHERE thread_id = ? ORDER BY post_number ASC'
+    ).bind(threadId).all<{ post_number: number; author_name: string; body: string; author_type: string }>();
+
+    const recentPosts = existingPosts.results.map((p) => ({
+      number: p.post_number, authorName: p.author_name, body: p.body, authorType: p.author_type,
+    }));
+
+    const lastHumanPost = [...recentPosts].reverse().find(p => p.authorType === 'human');
+    const targetBody = lastHumanPost?.body ?? thread.title;
+    const targetNumber = lastHumanPost?.number ?? 1;
+
+    const { buildReplyPrompt } = await import('@bs-job-board/agent');
+    const replyCount = 3 + Math.floor(Math.random() * 4);
+    const userPrompt = buildReplyPrompt({ threadTitle: thread.title, targetBody, recentPosts, replyCount });
+
+    const SYSTEM = `あなたは2chふう匿名掲示板の住民です。判断しない。材料を並べる。質問で終わらせない。辛辣にしない。JSON形式で{"replies":["レス1","レス2",...]}を返す。指定件数ぴったり返す。`;
+
+    const sakuraRes = await fetch('https://api.ai.sakura.ad.jp/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${c.env.SAKURA_API_TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'gpt-oss-120b', stream: true, response_format: { type: 'json_object' },
+        messages: [{ role: 'system', content: SYSTEM }, { role: 'user', content: userPrompt }],
+        max_tokens: 1500, temperature: 0.7,
+      }),
+    });
+
+    if (!sakuraRes.ok || !sakuraRes.body) return c.text('AI error', 502);
+
+    // SSEをプロキシしつつ、完了時にDBに保存
+    const { readable, writable } = new TransformStream();
+    const writer = writable.getWriter();
+    const encoder = new TextEncoder();
+    let fullContent = '';
+    let fullThinking = '';
+
+    c.executionCtx.waitUntil((async () => {
+      const reader = sakuraRes.body!.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      try {
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          const text = decoder.decode(value, { stream: true });
+          buffer += text;
+
+          // クライアントにそのまま転送
+          await writer.write(encoder.encode(text));
+
+          // content/reasoning を蓄積
+          const lines = buffer.split('\n');
+          buffer = lines.pop() ?? '';
+          for (const line of lines) {
+            if (!line.startsWith('data: ') || line.includes('[DONE]')) continue;
+            try {
+              const chunk = JSON.parse(line.slice(6));
+              const delta = chunk?.choices?.[0]?.delta || {};
+              if (delta.content) fullContent += delta.content;
+              if (delta.reasoning_content) fullThinking += delta.reasoning_content;
+            } catch {}
+          }
+        }
+
+        // 残りバッファ処理
+        if (buffer.trim()) {
+          for (const line of buffer.split('\n')) {
+            if (!line.startsWith('data: ') || line.includes('[DONE]')) continue;
+            try {
+              const chunk = JSON.parse(line.slice(6));
+              const delta = chunk?.choices?.[0]?.delta || {};
+              if (delta.content) fullContent += delta.content;
+              if (delta.reasoning_content) fullThinking += delta.reasoning_content;
+            } catch {}
+          }
+        }
+
+        // DB保存
+        const { assignAnchors, applyAnchors } = await import('@bs-job-board/agent');
+        let replies: string[] = [];
+        try {
+          const parsed = JSON.parse(fullContent);
+          if (Array.isArray(parsed?.replies)) replies = parsed.replies.filter((r: string) => r.length >= 5);
+        } catch {}
+
+        const existingNumbers = recentPosts.map(p => p.number);
+        const anchors = assignAnchors(targetNumber, existingNumbers, replies.length);
+        const withAnchors = applyAnchors(replies, anchors);
+
+        for (const reply of withAnchors) {
+          await addPost(c.env.DB, threadId, { author_type: 'ai', author_name: '名無しさん@AI', role: null, body: reply });
+        }
+        if (fullThinking) {
+          await addPost(c.env.DB, threadId, { author_type: 'ai', author_name: '🤔 AIの思考', role: 'thinking', body: fullThinking });
+        }
+      } finally {
+        await writer.close();
+      }
+    })());
+
+    return new Response(readable, {
+      headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Access-Control-Allow-Origin': '*' },
+    });
+  })

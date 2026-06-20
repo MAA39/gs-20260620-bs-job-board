@@ -3,6 +3,8 @@ import { createServerFn } from '@tanstack/react-start';
 import { useState, useEffect, useCallback } from 'react';
 import type { ThreadDetail } from '@bs-job-board/contracts';
 
+const API_URL = 'https://bs-job-board-api.masa-nekoshinshi39.workers.dev';
+
 async function getApi() {
   try {
     const { env } = (await import('cloudflare:workers')) as { env: { API: { fetch: typeof fetch } } };
@@ -29,15 +31,67 @@ function ThreadDetailPage() {
   const [thread, setThread] = useState(initial);
   const [comment, setComment] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [streaming, setStreaming] = useState(false);
+  const [streamThinking, setStreamThinking] = useState('');
+  const [streamContent, setStreamContent] = useState('');
 
   useEffect(() => { setThread(initial); }, [initial]);
-  useEffect(() => { const p = setInterval(async () => { try { setThread(await fetchDetail({ data: { id: params.id } })); } catch {} }, 5000); return () => clearInterval(p); }, [params.id]);
+  useEffect(() => {
+    if (streaming) return; // SSE中はポーリングしない
+    const p = setInterval(async () => { try { setThread(await fetchDetail({ data: { id: params.id } })); } catch {} }, 5000);
+    return () => clearInterval(p);
+  }, [params.id, streaming]);
+
+  const startAiStream = useCallback(async () => {
+    setStreaming(true);
+    setStreamThinking('');
+    setStreamContent('');
+
+    try {
+      const res = await fetch(`${API_URL}/api/v1/threads/${params.id}/ai-stream`, { method: 'POST' });
+      if (!res.ok || !res.body) { setStreaming(false); return; }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ') || line.includes('[DONE]')) continue;
+          try {
+            const chunk = JSON.parse(line.slice(6));
+            const delta = chunk?.choices?.[0]?.delta || {};
+            if (delta.reasoning_content) setStreamThinking(prev => prev + delta.reasoning_content);
+            if (delta.content) setStreamContent(prev => prev + delta.content);
+          } catch {}
+        }
+      }
+    } finally {
+      // SSE完了 → DB保存は完了してるはず → ポーリングで取得
+      setStreaming(false);
+      setTimeout(async () => {
+        try { setThread(await fetchDetail({ data: { id: params.id } })); } catch {}
+      }, 1000);
+    }
+  }, [params.id]);
 
   const handleComment = useCallback(async (e: React.FormEvent) => {
     e.preventDefault(); if (!comment.trim()) return; setSubmitting(true);
-    try { await addComment({ data: { threadId: params.id, body: comment.trim() } }); setComment(''); setThread(await fetchDetail({ data: { id: params.id } })); }
-    finally { setSubmitting(false); }
-  }, [comment, params.id]);
+    try {
+      await addComment({ data: { threadId: params.id, body: comment.trim() } });
+      setComment('');
+      setThread(await fetchDetail({ data: { id: params.id } }));
+      // コメント後にAIストリーム開始
+      startAiStream();
+    } finally { setSubmitting(false); }
+  }, [comment, params.id, startAiStream]);
 
   const handleFix = useCallback(async () => {
     await fixThread({ data: { threadId: params.id, status: thread.status === 'fixed' ? 'open' : 'fixed' } });
@@ -65,7 +119,7 @@ function ThreadDetailPage() {
 
       <div className="section-header">
         <span>Posts</span>
-        <span>{regularPosts.length}件 · 5秒で自動更新</span>
+        <span>{regularPosts.length}件{streaming ? ' · AI生成中...' : ' · 5秒で自動更新'}</span>
       </div>
 
       {regularPosts.map((post) => (
@@ -78,6 +132,30 @@ function ThreadDetailPage() {
         </div>
       ))}
 
+      {/* SSEストリーミング表示 */}
+      {streaming && (
+        <>
+          {streamThinking && (
+            <div className="post" style={{ background: '#fff8e1', borderStyle: 'dashed' }}>
+              <div className="post-header">
+                <strong style={{ background: '#f0b429' }}>...</strong>
+                <span>🤔 AIの思考（リアルタイム）</span>
+              </div>
+              <div className="post-body" style={{ fontSize: '0.8rem', color: '#666' }}>{streamThinking}<span style={{ display: 'inline-block', width: '2px', height: '1em', background: '#20211d', animation: 'blink 1s infinite' }} /></div>
+            </div>
+          )}
+          {streamContent && (
+            <div className="post" style={{ background: '#eef5ef', borderStyle: 'dashed' }}>
+              <div className="post-header">
+                <strong style={{ background: '#2f7d68' }}>...</strong>
+                <span>名無しさん@AI（生成中）</span>
+              </div>
+              <div className="post-body">{streamContent}<span style={{ display: 'inline-block', width: '2px', height: '1em', background: '#20211d', animation: 'blink 1s infinite' }} /></div>
+            </div>
+          )}
+        </>
+      )}
+
       {thinkPosts.map((post) => (
         <details key={post.id} className="thinking">
           <summary>🤔 AIの思考過程（タップで展開）</summary>
@@ -89,9 +167,11 @@ function ThreadDetailPage() {
         <p className="eyebrow">Reply</p>
         <form onSubmit={handleComment} style={{ marginTop: '8px' }}>
           <input value={comment} onChange={e => setComment(e.target.value)} placeholder="名無しさんとしてレスを書く" required />
-          <button type="submit" disabled={submitting}>{submitting ? '送信中...' : 'レスする'}</button>
+          <button type="submit" disabled={submitting || streaming}>{submitting ? '送信中...' : streaming ? 'AI生成中...' : 'レスする'}</button>
         </form>
       </div>
+
+      <style dangerouslySetInnerHTML={{ __html: '@keyframes blink{0%,50%{opacity:1}51%,100%{opacity:0}}' }} />
     </div>
   );
 }
