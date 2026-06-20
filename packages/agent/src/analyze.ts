@@ -27,7 +27,7 @@ const SYSTEM_PROMPT = `あなたは2chふう匿名掲示板の住民です。ブ
 ## 出力形式（厳守）
 必ず以下のJSON形式だけを出力する。前置きや説明は一切不要。
 {"replies": ["レス1", "レス2", ...]}
-各レスは一文で短く。指定件数ぴったり。`;
+指定件数ぴったり返す。`;
 
 export function buildReplyPrompt(params: {
   threadTitle: string;
