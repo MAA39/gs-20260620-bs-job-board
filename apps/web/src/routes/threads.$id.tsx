@@ -1,7 +1,7 @@
 import { createFileRoute, Link } from '@tanstack/react-router';
 import { createServerFn } from '@tanstack/react-start';
-import { useState, useEffect, useCallback } from 'react';
-import type { ThreadDetail } from '@bs-job-board/contracts';
+import { useState, useEffect, useCallback, useMemo } from 'react';
+import type { ThreadDetail, Post } from '@bs-job-board/contracts';
 
 const API_URL = 'https://bs-job-board-api.masa-nekoshinshi39.workers.dev';
 
@@ -34,35 +34,28 @@ function ThreadDetailPage() {
   const [streaming, setStreaming] = useState(false);
   const [streamThinking, setStreamThinking] = useState('');
   const [streamContent, setStreamContent] = useState('');
+  const [streamSourceNum, setStreamSourceNum] = useState<number | null>(null);
 
   useEffect(() => { setThread(initial); }, [initial]);
   useEffect(() => {
-    if (streaming) return; // SSE中はポーリングしない
+    if (streaming) return;
     const p = setInterval(async () => { try { setThread(await fetchDetail({ data: { id: params.id } })); } catch {} }, 5000);
     return () => clearInterval(p);
   }, [params.id, streaming]);
 
-  const startAiStream = useCallback(async () => {
-    setStreaming(true);
-    setStreamThinking('');
-    setStreamContent('');
-
+  const startAiStream = useCallback(async (sourceNum: number) => {
+    setStreaming(true); setStreamThinking(''); setStreamContent(''); setStreamSourceNum(sourceNum);
     try {
       const res = await fetch(`${API_URL}/api/v1/threads/${params.id}/ai-stream`, { method: 'POST' });
-      if (!res.ok || !res.body) { setStreaming(false); return; }
-
+      if (!res.ok || !res.body) return;
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
-
       while (true) {
         const { value, done } = await reader.read();
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
-
-        const lines = buffer.split('\n');
-        buffer = lines.pop() ?? '';
-
+        const lines = buffer.split('\n'); buffer = lines.pop() ?? '';
         for (const line of lines) {
           if (!line.startsWith('data: ') || line.includes('[DONE]')) continue;
           try {
@@ -74,11 +67,8 @@ function ThreadDetailPage() {
         }
       }
     } finally {
-      // SSE完了 → DB保存は完了してるはず → ポーリングで取得
-      setStreaming(false);
-      setTimeout(async () => {
-        try { setThread(await fetchDetail({ data: { id: params.id } })); } catch {}
-      }, 1000);
+      setStreaming(false); setStreamSourceNum(null);
+      setTimeout(async () => { try { setThread(await fetchDetail({ data: { id: params.id } })); } catch {} }, 1000);
     }
   }, [params.id]);
 
@@ -87,9 +77,10 @@ function ThreadDetailPage() {
     try {
       await addComment({ data: { threadId: params.id, body: comment.trim() } });
       setComment('');
-      setThread(await fetchDetail({ data: { id: params.id } }));
-      // コメント後にAIストリーム開始
-      startAiStream();
+      const fresh = await fetchDetail({ data: { id: params.id } });
+      setThread(fresh);
+      const lastPost = fresh.posts[fresh.posts.length - 1];
+      startAiStream(lastPost.post_number);
     } finally { setSubmitting(false); }
   }, [comment, params.id, startAiStream]);
 
@@ -98,8 +89,24 @@ function ThreadDetailPage() {
     setThread(await fetchDetail({ data: { id: params.id } }));
   }, [thread.status, params.id]);
 
-  const regularPosts = thread.posts.filter(p => p.role !== 'thinking');
-  const thinkPosts = thread.posts.filter(p => p.role === 'thinking');
+  // グルーピング: 人間の投稿を基準にAIレスをぶら下げる
+  const grouped = useMemo(() => {
+    const posts = thread.posts;
+    const humanPosts = posts.filter(p => p.author_type === 'human');
+    const result: Array<{ human: Post; aiReplies: Post[]; thinking: Post[] }> = [];
+
+    for (const hp of humanPosts) {
+      const aiReplies = posts.filter(p => p.author_type === 'ai' && p.role !== 'thinking' && p.source_post_number === hp.post_number);
+      const thinking = posts.filter(p => p.role === 'thinking' && p.source_post_number === hp.post_number);
+      result.push({ human: hp, aiReplies, thinking });
+    }
+
+    // source_post_number が null の孤立AIレス（既存データ）
+    const orphans = posts.filter(p => p.author_type === 'ai' && p.role !== 'thinking' && p.source_post_number == null);
+    const orphanThink = posts.filter(p => p.role === 'thinking' && p.source_post_number == null);
+
+    return { groups: result, orphans, orphanThink };
+  }, [thread.posts]);
 
   return (
     <div>
@@ -119,44 +126,64 @@ function ThreadDetailPage() {
 
       <div className="section-header">
         <span>Posts</span>
-        <span>{regularPosts.length}件{streaming ? ' · AI生成中...' : ' · 5秒で自動更新'}</span>
+        <span>{thread.posts.filter(p => p.role !== 'thinking').length}件{streaming ? ' · AI生成中...' : ' · 5秒で自動更新'}</span>
       </div>
 
-      {regularPosts.map((post) => (
-        <div key={post.id} className={`post ${post.author_type === 'ai' ? 'post-ai' : ''}`}>
-          <div className="post-header">
-            <strong>{post.post_number}</strong>
-            <span>{post.author_name}</span>
-          </div>
+      {/* 孤立AIレス（既存データ、source_post_number なし） */}
+      {grouped.orphans.map((post) => (
+        <div key={post.id} className="post post-ai">
+          <div className="post-header"><strong>{post.post_number}</strong><span>{post.author_name}</span></div>
           <div className="post-body">{post.body}</div>
         </div>
       ))}
 
-      {/* SSEストリーミング表示 */}
-      {streaming && (
-        <>
-          {streamThinking && (
-            <div className="post" style={{ background: '#fff8e1', borderStyle: 'dashed' }}>
-              <div className="post-header">
-                <strong style={{ background: '#f0b429' }}>...</strong>
-                <span>🤔 AIの思考（リアルタイム）</span>
-              </div>
-              <div className="post-body" style={{ fontSize: '0.8rem', color: '#666' }}>{streamThinking}<span style={{ display: 'inline-block', width: '2px', height: '1em', background: '#20211d', animation: 'blink 1s infinite' }} /></div>
-            </div>
-          )}
-          {streamContent && (
-            <div className="post" style={{ background: '#eef5ef', borderStyle: 'dashed' }}>
-              <div className="post-header">
-                <strong style={{ background: '#2f7d68' }}>...</strong>
-                <span>名無しさん@AI（生成中）</span>
-              </div>
-              <div className="post-body">{streamContent}<span style={{ display: 'inline-block', width: '2px', height: '1em', background: '#20211d', animation: 'blink 1s infinite' }} /></div>
-            </div>
-          )}
-        </>
-      )}
+      {/* グルーピング表示 */}
+      {grouped.groups.map(({ human, aiReplies, thinking }) => (
+        <div key={human.id}>
+          {/* 人間の投稿 */}
+          <div className="post">
+            <div className="post-header"><strong>{human.post_number}</strong><span>{human.author_name}</span></div>
+            <div className="post-body">{human.body}</div>
+          </div>
 
-      {thinkPosts.map((post) => (
+          {/* ぶら下がりAIレス */}
+          <div style={{ marginLeft: '16px' }}>
+            {aiReplies.map((post) => (
+              <div key={post.id} className="post post-ai">
+                <div className="post-header"><strong>{post.post_number}</strong><span>{post.author_name}</span></div>
+                <div className="post-body">{post.body}</div>
+              </div>
+            ))}
+
+            {/* SSEストリーミング（この人間コメントの下に表示） */}
+            {streaming && streamSourceNum === human.post_number && (
+              <>
+                {streamThinking && (
+                  <div className="post" style={{ background: '#fff8e1', borderStyle: 'dashed' }}>
+                    <div className="post-header"><strong style={{ background: '#f0b429' }}>...</strong><span>🤔 思考中</span></div>
+                    <div className="post-body" style={{ fontSize: '0.8rem', color: '#666' }}>{streamThinking}<span style={{ display: 'inline-block', width: '2px', height: '1em', background: '#20211d', animation: 'blink 1s infinite' }} /></div>
+                  </div>
+                )}
+                {streamContent && (
+                  <div className="post" style={{ background: '#eef5ef', borderStyle: 'dashed' }}>
+                    <div className="post-header"><strong style={{ background: '#2f7d68' }}>...</strong><span>名無しさん@AI（生成中）</span></div>
+                    <div className="post-body">{streamContent}<span style={{ display: 'inline-block', width: '2px', height: '1em', background: '#20211d', animation: 'blink 1s infinite' }} /></div>
+                  </div>
+                )}
+              </>
+            )}
+
+            {thinking.map((post) => (
+              <details key={post.id} className="thinking">
+                <summary>🤔 AIの思考過程（タップで展開）</summary>
+                <div style={{ marginTop: '8px', whiteSpace: 'pre-wrap' }}>{post.body}</div>
+              </details>
+            ))}
+          </div>
+        </div>
+      ))}
+
+      {grouped.orphanThink.map((post) => (
         <details key={post.id} className="thinking">
           <summary>🤔 AIの思考過程（タップで展開）</summary>
           <div style={{ marginTop: '8px', whiteSpace: 'pre-wrap' }}>{post.body}</div>
