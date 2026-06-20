@@ -11,10 +11,12 @@
   "durable_objects": {
     "bindings": [
       { "name": "FLUE_ANALYST_AGENT", "class_name": "FlueAnalystAgent" },
+      { "name": "FLUE_GENERATE_REPLIES_WORKFLOW", "class_name": "FlueGenerateRepliesWorkflow" },
       { "name": "FLUE_REGISTRY", "class_name": "FlueRegistry" }
     ]
   },
   "migrations": [
-    { "tag": "v1", "new_sqlite_classes": ["FlueRegistry", "FlueAnalystAgent"] }
+    { "tag": "v1", "new_sqlite_classes": ["FlueRegistry", "FlueAnalystAgent"] },
+    { "tag": "v2", "new_sqlite_classes": ["FlueGenerateRepliesWorkflow"] }
   ]
 }

@@ -27,6 +27,10 @@
         "class_name": "FlueAnalystAgent"
       },
       {
+        "name": "FLUE_GENERATE_REPLIES_WORKFLOW",
+        "class_name": "FlueGenerateRepliesWorkflow"
+      },
+      {
         "name": "FLUE_REGISTRY",
         "class_name": "FlueRegistry"
       }
@@ -38,6 +42,12 @@
       "new_sqlite_classes": [
         "FlueRegistry",
         "FlueAnalystAgent"
+      ]
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": [
+        "FlueGenerateRepliesWorkflow"
       ]
     }
   ],
