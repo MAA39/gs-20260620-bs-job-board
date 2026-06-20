@@ -44,6 +44,16 @@ function ThreadDetailPage() {
     return () => clearInterval(p);
   }, [params.id, streaming]);
 
+  // スレッド作成直後: AIレスが0件なら自動でSSE開始
+  useEffect(() => {
+    const aiPosts = thread.posts.filter(p => p.author_type === 'ai');
+    const humanPosts = thread.posts.filter(p => p.author_type === 'human');
+    if (aiPosts.length === 0 && humanPosts.length > 0 && !streaming) {
+      const firstHuman = humanPosts[0];
+      startAiStream(firstHuman.post_number);
+    }
+  }, []); // 初回のみ
+
   const startAiStream = useCallback(async (sourceNum: number) => {
     setStreaming(true); setStreamThinking(''); setStreamContent(''); setStreamSourceNum(sourceNum);
     try {

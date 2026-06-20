@@ -94,7 +94,14 @@ function HomePage() {
     if (!title.trim() || !body.trim()) return;
     if (!isAuthenticated()) { setPendingAction('post'); setShowAuthModal(true); return; }
     setSubmitting(true);
-    try { await createThreadAction({ data: { title: title.trim(), body: body.trim() } }); setTitle(''); setBody(''); setThreads(await fetchThreads({ data: { sort } })); }
+    try {
+        const result = await createThreadAction({ data: { title: title.trim(), body: body.trim() } });
+        setTitle(''); setBody('');
+        // 作成したスレッドの詳細に遷移（SSEで生成過程を見る）
+        const fresh = await fetchThreads({ data: { sort: 'new' } });
+        if (fresh.length > 0) { navigate({ to: '/threads/$id', params: { id: fresh[0].id } }); }
+        else { setThreads(await fetchThreads({ data: { sort } })); }
+      }
     finally { setSubmitting(false); }
   }, [title, body, sort]);
 
@@ -104,7 +111,14 @@ function HomePage() {
     setShowAuthModal(false);
     if (pendingAction === 'post' && title.trim() && body.trim()) {
       setSubmitting(true);
-      try { await createThreadAction({ data: { title: title.trim(), body: body.trim() } }); setTitle(''); setBody(''); setThreads(await fetchThreads({ data: { sort } })); }
+      try {
+        const result = await createThreadAction({ data: { title: title.trim(), body: body.trim() } });
+        setTitle(''); setBody('');
+        // 作成したスレッドの詳細に遷移（SSEで生成過程を見る）
+        const fresh = await fetchThreads({ data: { sort: 'new' } });
+        if (fresh.length > 0) { navigate({ to: '/threads/$id', params: { id: fresh[0].id } }); }
+        else { setThreads(await fetchThreads({ data: { sort } })); }
+      }
       finally { setSubmitting(false); }
     }
     setPendingAction(null);
