@@ -89,11 +89,14 @@ export async function generateReplies(params: {
     choices: Array<{ message: { content: string | null; reasoning_content?: string } }>;
   };
 
-  const content = data.choices[0]?.message?.content
-    ?? data.choices[0]?.message?.reasoning_content
-    ?? '';
+  const reasoning = data.choices[0]?.message?.reasoning_content ?? '';
+  const content = data.choices[0]?.message?.content ?? '';
 
-  return parseReplies(content, params.replyCount);
+  // AI出力過程をログに出す（Cloudflare Dashboard Logs / wrangler tailで確認可能）
+  console.log('[AI Think]', reasoning.slice(0, 500));
+  console.log('[AI Content]', content.slice(0, 500));
+
+  return parseReplies(content || reasoning, params.replyCount);
 }
 
 export function parseReplies(raw: string, count: number): string[] {
