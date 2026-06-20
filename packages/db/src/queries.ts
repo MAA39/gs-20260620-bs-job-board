@@ -58,19 +58,28 @@ export async function addPost(
   threadId: string,
   input: CreatePostInput,
 ): Promise<{ postId: string; postNumber: number }> {
-  const postId = crypto.randomUUID();
+  // UNIQUE(thread_id, post_number) 制約があるため、重複時はリトライ
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const postId = crypto.randomUUID();
 
-  const lastPost = await db.prepare(
-    'SELECT MAX(post_number) as max_num FROM posts WHERE thread_id = ?'
-  ).bind(threadId).first<{ max_num: number | null }>();
+    const lastPost = await db.prepare(
+      'SELECT MAX(post_number) as max_num FROM posts WHERE thread_id = ?'
+    ).bind(threadId).first<{ max_num: number | null }>();
 
-  const postNumber = (lastPost?.max_num ?? 0) + 1;
+    const postNumber = (lastPost?.max_num ?? 0) + 1;
 
-  await db.prepare(
-    'INSERT INTO posts (id, thread_id, post_number, author_type, author_name, role, body, source_post_number, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
-  ).bind(postId, threadId, postNumber, input.author_type, input.author_name, input.role, input.body, input.source_post_number ?? null, input.user_id ?? null).run();
+    try {
+      await db.prepare(
+        'INSERT INTO posts (id, thread_id, post_number, author_type, author_name, role, body, source_post_number, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+      ).bind(postId, threadId, postNumber, input.author_type, input.author_name, input.role, input.body, input.source_post_number ?? null, input.user_id ?? null).run();
 
-  return { postId, postNumber };
+      return { postId, postNumber };
+    } catch (err) {
+      // UNIQUE制約違反の場合リトライ
+      if (attempt === 4) throw err;
+    }
+  }
+  throw new Error('Failed to assign post_number after 5 retries');
 }
 
 /** スレッドのステータスを更新 */
