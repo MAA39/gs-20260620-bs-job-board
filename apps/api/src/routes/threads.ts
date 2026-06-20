@@ -7,6 +7,7 @@ import {
   addPost,
   updateThreadStatus,
   incrementReaction,
+  toggleReaction,
 } from '@bs-job-board/db';
 import { generateDeepDiveQuestion, parseAnalysisResponse } from '@bs-job-board/agent';
 
@@ -72,8 +73,10 @@ export const threadRoutes = new Hono<{ Bindings: Bindings }>()
 
   .post('/:id/react', async (c) => {
     const threadId = c.req.param('id');
-    const count = await incrementReaction(c.env.DB, threadId);
-    return c.json({ reaction_count: count });
+    const { userId } = await c.req.json<{ userId: string }>();
+    if (!userId) return c.json({ error: 'userId required' }, 400);
+    const result = await toggleReaction(c.env.DB, threadId, userId);
+    return c.json(result);
   })
 
   .patch('/:id', async (c) => {

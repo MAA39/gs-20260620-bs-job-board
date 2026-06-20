@@ -36,12 +36,26 @@ const createThreadAction = createServerFn({ method: 'POST' })
   });
 
 const reactAction = createServerFn({ method: 'POST' })
-  .validator((input: { threadId: string }) => input)
+  .validator((input: { threadId: string; userId: string }) => input)
   .handler(async ({ data }) => {
     const api = await getApi();
-    const res = await api(`/api/v1/threads/${data.threadId}/react`, { method: 'POST' });
-    return (await res.json()) as { reaction_count: number };
+    const res = await api(`/api/v1/threads/${data.threadId}/react`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: data.userId }),
+    });
+    return (await res.json()) as { reacted: boolean; reaction_count: number };
   });
+
+function getUserId(): string {
+  if (typeof window === 'undefined') return '';
+  let id = localStorage.getItem('bs-user-id');
+  if (!id) {
+    id = crypto.randomUUID();
+    localStorage.setItem('bs-user-id', id);
+  }
+  return id;
+}
 
 export const Route = createFileRoute('/')({
   validateSearch: (search: Record<string, unknown>) => ({
@@ -60,11 +74,11 @@ function HomePage() {
   const [title, setTitle] = useState('');
   const [body, setBody] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [userId, setUserId] = useState('');
 
-  // SSRデータで初期化
   useEffect(() => { setThreads(initialThreads); }, [initialThreads]);
+  useEffect(() => { setUserId(getUserId()); }, []);
 
-  // 5秒ポーリング
   useEffect(() => {
     const poll = setInterval(async () => {
       try {
@@ -91,84 +105,46 @@ function HomePage() {
   }, [title, body, sort]);
 
   const handleReact = useCallback(async (threadId: string) => {
-    const result = await reactAction({ data: { threadId } });
+    if (!userId) return;
+    const result = await reactAction({ data: { threadId, userId } });
     setThreads(prev => prev.map(t =>
       t.id === threadId ? { ...t, reaction_count: result.reaction_count } : t
     ));
-  }, []);
+  }, [userId]);
 
   return (
     <div>
-      {/* 投稿フォーム */}
       <div className="card">
         <h3 style={{ marginBottom: '8px' }}>💬 うちのブルシット・ジョブを投稿</h3>
         <form onSubmit={handleSubmit}>
-          <input
-            value={title}
-            onChange={e => setTitle(e.target.value)}
-            placeholder="タイトル（例: 週次報告書の二重入力）"
-            required
-          />
-          <textarea
-            value={body}
-            onChange={e => setBody(e.target.value)}
-            placeholder="何が無駄？どのくらい時間溶けてる？なぜ廃止されない？"
-            required
-          />
-          <button type="submit" disabled={submitting}>
-            {submitting ? '投稿中...' : '投稿する'}
-          </button>
+          <input value={title} onChange={e => setTitle(e.target.value)} placeholder="タイトル（例: 週次報告書の二重入力）" required />
+          <textarea value={body} onChange={e => setBody(e.target.value)} placeholder="何が無駄？どのくらい時間溶けてる？なぜ廃止されない？" required />
+          <button type="submit" disabled={submitting}>{submitting ? '投稿中...' : '投稿する'}</button>
         </form>
       </div>
 
-      {/* ソート切替 */}
       <div style={{ display: 'flex', gap: '8px', margin: '16px 0 8px' }}>
-        <button
-          onClick={() => navigate({ search: { sort: 'hot' } })}
-          style={{ background: sort === 'hot' ? '#1a1a2e' : '#ccc', fontSize: '0.85rem', padding: '4px 12px' }}
-        >
-          🔥 わかる！順
-        </button>
-        <button
-          onClick={() => navigate({ search: { sort: 'new' } })}
-          style={{ background: sort === 'new' ? '#1a1a2e' : '#ccc', fontSize: '0.85rem', padding: '4px 12px' }}
-        >
-          🆕 新着順
-        </button>
-        <span style={{ color: '#999', fontSize: '0.8rem', alignSelf: 'center' }}>
-          {threads.length}件 · 5秒で自動更新
-        </span>
+        <button onClick={() => navigate({ search: { sort: 'hot' } })} style={{ background: sort === 'hot' ? '#1a1a2e' : '#ccc', fontSize: '0.85rem', padding: '4px 12px' }}>🔥 わかる！順</button>
+        <button onClick={() => navigate({ search: { sort: 'new' } })} style={{ background: sort === 'new' ? '#1a1a2e' : '#ccc', fontSize: '0.85rem', padding: '4px 12px' }}>🆕 新着順</button>
+        <span style={{ color: '#999', fontSize: '0.8rem', alignSelf: 'center' }}>{threads.length}件 · 5秒で自動更新</span>
       </div>
 
-      {/* スレッド一覧 */}
       {threads.map((thread) => (
         <div key={thread.id} className="card">
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <Link to="/threads/$id" params={{ id: thread.id }} style={{ textDecoration: 'none', color: 'inherit', flex: 1 }}>
               <h3>{thread.title}</h3>
-              <p style={{ color: '#666', marginTop: '4px', fontSize: '0.9rem' }}>
-                {thread.body.length > 80 ? thread.body.slice(0, 80) + '...' : thread.body}
-              </p>
+              <p style={{ color: '#666', marginTop: '4px', fontSize: '0.9rem' }}>{thread.body.length > 80 ? thread.body.slice(0, 80) + '...' : thread.body}</p>
             </Link>
-            <button
-              onClick={(e) => { e.preventDefault(); handleReact(thread.id); }}
-              style={{ background: '#fff3e0', color: '#e65100', border: '1px solid #ffcc80', minWidth: '70px', padding: '8px', fontSize: '0.9rem' }}
-            >
+            <button onClick={(e) => { e.preventDefault(); handleReact(thread.id); }} style={{ background: '#fff3e0', color: '#e65100', border: '1px solid #ffcc80', minWidth: '70px', padding: '8px', fontSize: '0.9rem' }}>
               👋 {thread.reaction_count}
             </button>
-          </div>
-          <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }}>
-            <span className={`badge badge-${thread.status}`}>
-              {thread.status === 'fixed' ? '✅ 整理完了' : '🔵 議論中'}
-            </span>
           </div>
         </div>
       ))}
 
       {threads.length === 0 && (
-        <div className="card" style={{ textAlign: 'center', color: '#999' }}>
-          まだ投稿がありません。最初のブルシット・ジョブを投稿してみよう！
-        </div>
+        <div className="card" style={{ textAlign: 'center', color: '#999' }}>まだ投稿がありません。最初のブルシット・ジョブを投稿してみよう！</div>
       )}
     </div>
   );

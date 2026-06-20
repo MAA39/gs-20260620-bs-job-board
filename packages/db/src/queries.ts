@@ -111,3 +111,33 @@ export async function listThreadsSorted(
   ).all<Thread & { reaction_count: number }>();
   return result.results;
 }
+
+/** わかる！（重複防止: 1ユーザー1スレッド1回） */
+export async function toggleReaction(
+  db: D1Database,
+  threadId: string,
+  userId: string,
+): Promise<{ reacted: boolean; count: number }> {
+  const existing = await db.prepare(
+    'SELECT id FROM reactions WHERE thread_id = ? AND user_id = ?'
+  ).bind(threadId, userId).first();
+
+  if (existing) {
+    // 既にリアクション済み → 取り消し
+    await db.batch([
+      db.prepare('DELETE FROM reactions WHERE thread_id = ? AND user_id = ?').bind(threadId, userId),
+      db.prepare('UPDATE threads SET reaction_count = MAX(0, reaction_count - 1) WHERE id = ?').bind(threadId),
+    ]);
+    const row = await db.prepare('SELECT reaction_count FROM threads WHERE id = ?').bind(threadId).first<{ reaction_count: number }>();
+    return { reacted: false, count: row?.reaction_count ?? 0 };
+  } else {
+    // 新規リアクション
+    const id = crypto.randomUUID();
+    await db.batch([
+      db.prepare('INSERT INTO reactions (id, thread_id, user_id) VALUES (?, ?, ?)').bind(id, threadId, userId),
+      db.prepare('UPDATE threads SET reaction_count = reaction_count + 1 WHERE id = ?').bind(threadId),
+    ]);
+    const row = await db.prepare('SELECT reaction_count FROM threads WHERE id = ?').bind(threadId).first<{ reaction_count: number }>();
+    return { reacted: true, count: row?.reaction_count ?? 0 };
+  }
+}

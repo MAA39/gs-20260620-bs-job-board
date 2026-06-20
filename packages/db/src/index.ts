@@ -6,4 +6,5 @@ export {
   addPost,
   updateThreadStatus,
   incrementReaction,
+  toggleReaction,
 } from './queries.ts';
