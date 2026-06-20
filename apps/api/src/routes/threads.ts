@@ -135,7 +135,7 @@ export const threadRoutes = new Hono<{ Bindings: Bindings }>()
     const { status } = await c.req.json<{ status: 'open' | 'fixed' }>();
     await updateThreadStatus(c.env.DB, threadId, status);
     return c.json({ id: threadId, status });
-  });
+  })
 
   // SSEストリーミング: AIレス生成をリアルタイムで返す
   .post('/:id/ai-stream', async (c) => {
