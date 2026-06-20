@@ -1,39 +1,37 @@
 import { Hono } from 'hono';
 import type { CreateThreadInput, CreatePostInput } from '@bs-job-board/contracts';
 import {
-  listThreads,
+  listThreadsSorted,
   getThreadDetail,
   createThread,
   addPost,
   updateThreadStatus,
+  incrementReaction,
 } from '@bs-job-board/db';
 
 type Bindings = {
   DB: D1Database;
-  AGENT: Fetcher; // Service Binding to agent Worker
+  AGENT: Fetcher;
 };
 
 export const threadRoutes = new Hono<{ Bindings: Bindings }>()
 
-  // スレッド一覧
   .get('/', async (c) => {
-    const threads = await listThreads(c.env.DB);
+    const sort = (c.req.query('sort') ?? 'new') as 'new' | 'hot';
+    const threads = await listThreadsSorted(c.env.DB, sort);
     return c.json(threads);
   })
 
-  // スレッド詳細（posts込み）
   .get('/:id', async (c) => {
     const detail = await getThreadDetail(c.env.DB, c.req.param('id'));
     if (!detail) return c.json({ error: 'not found' }, 404);
     return c.json(detail);
   })
 
-  // スレッド作成 → agent にAI分析を非同期依頼
   .post('/', async (c) => {
     const input = await c.req.json<CreateThreadInput>();
     const { threadId } = await createThread(c.env.DB, input);
 
-    // agent Worker に分析依頼（非同期、レスポンスは待たない）
     if (c.env.AGENT) {
       c.executionCtx.waitUntil(
         c.env.AGENT.fetch(new Request('https://agent/dispatch-analysis', {
@@ -47,7 +45,6 @@ export const threadRoutes = new Hono<{ Bindings: Bindings }>()
     return c.json({ id: threadId, title: input.title }, 201);
   })
 
-  // レス追加（人間コメント or AI分析レス）
   .post('/:id/posts', async (c) => {
     const threadId = c.req.param('id');
     const input = await c.req.json<CreatePostInput>();
@@ -55,7 +52,12 @@ export const threadRoutes = new Hono<{ Bindings: Bindings }>()
     return c.json({ id: postId, post_number: postNumber }, 201);
   })
 
-  // スレッドステータス更新（Fix/確定）
+  .post('/:id/react', async (c) => {
+    const threadId = c.req.param('id');
+    const count = await incrementReaction(c.env.DB, threadId);
+    return c.json({ reaction_count: count });
+  })
+
   .patch('/:id', async (c) => {
     const threadId = c.req.param('id');
     const { status } = await c.req.json<{ status: 'open' | 'fixed' }>();

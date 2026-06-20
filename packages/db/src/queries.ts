@@ -83,3 +83,31 @@ export async function updateThreadStatus(
     'UPDATE threads SET status = ? WHERE id = ?'
   ).bind(status, threadId).run();
 }
+
+/** わかる！+1 */
+export async function incrementReaction(
+  db: D1Database,
+  threadId: string,
+): Promise<number> {
+  await db.prepare(
+    'UPDATE threads SET reaction_count = reaction_count + 1 WHERE id = ?'
+  ).bind(threadId).run();
+  const row = await db.prepare(
+    'SELECT reaction_count FROM threads WHERE id = ?'
+  ).bind(threadId).first<{ reaction_count: number }>();
+  return row?.reaction_count ?? 0;
+}
+
+/** スレッド一覧（ソート対応） */
+export async function listThreadsSorted(
+  db: D1Database,
+  sort: 'new' | 'hot' = 'new',
+): Promise<(Thread & { reaction_count: number })[]> {
+  const orderBy = sort === 'hot'
+    ? 'reaction_count DESC, created_at DESC'
+    : 'created_at DESC';
+  const result = await db.prepare(
+    `SELECT * FROM threads ORDER BY ${orderBy}`
+  ).all<Thread & { reaction_count: number }>();
+  return result.results;
+}

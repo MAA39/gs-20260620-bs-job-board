@@ -1,57 +1,173 @@
-import { createFileRoute, Link } from '@tanstack/react-router';
+import { createFileRoute, Link, useNavigate } from '@tanstack/react-router';
 import { createServerFn } from '@tanstack/react-start';
+import { useState, useEffect, useCallback } from 'react';
 import type { Thread } from '@bs-job-board/contracts';
 
-const fetchThreads = createServerFn({ method: 'GET' }).handler(async () => {
+type ThreadWithReactions = Thread & { reaction_count: number };
+
+async function getApi() {
   try {
-    // Service Binding経由でAPI Workerを呼ぶ（CF Workers環境）
     const { env } = (await import('cloudflare:workers')) as { env: { API: { fetch: typeof fetch } } };
-    const res = await env.API.fetch('https://api/api/v1/threads');
-    if (!res.ok) return [] as Thread[];
-    return (await res.json()) as Thread[];
+    return (url: string, init?: RequestInit) => env.API.fetch(`https://api${url}`, init);
   } catch {
-    // ローカル開発時フォールバック
-    try {
-      const res = await fetch('http://localhost:8787/api/v1/threads');
-      if (!res.ok) return [] as Thread[];
-      return (await res.json()) as Thread[];
-    } catch {
-      return [] as Thread[];
-    }
+    return (url: string, init?: RequestInit) => fetch(`http://localhost:8787${url}`, init);
   }
-});
+}
+
+const fetchThreads = createServerFn({ method: 'GET' })
+  .validator((input: { sort: string }) => input)
+  .handler(async ({ data }) => {
+    const api = await getApi();
+    const res = await api(`/api/v1/threads?sort=${data.sort}`);
+    if (!res.ok) return [] as ThreadWithReactions[];
+    return (await res.json()) as ThreadWithReactions[];
+  });
+
+const createThreadAction = createServerFn({ method: 'POST' })
+  .validator((input: { title: string; body: string }) => input)
+  .handler(async ({ data }) => {
+    const api = await getApi();
+    const res = await api('/api/v1/threads', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    return (await res.json()) as { id: string };
+  });
+
+const reactAction = createServerFn({ method: 'POST' })
+  .validator((input: { threadId: string }) => input)
+  .handler(async ({ data }) => {
+    const api = await getApi();
+    const res = await api(`/api/v1/threads/${data.threadId}/react`, { method: 'POST' });
+    return (await res.json()) as { reaction_count: number };
+  });
 
 export const Route = createFileRoute('/')({
-  loader: () => fetchThreads(),
+  validateSearch: (search: Record<string, unknown>) => ({
+    sort: (search.sort as string) ?? 'new',
+  }),
+  loaderDeps: ({ search }) => ({ sort: search.sort }),
+  loader: ({ deps }) => fetchThreads({ data: { sort: deps.sort } }),
   component: HomePage,
 });
 
 function HomePage() {
-  const threads = Route.useLoaderData();
+  const initialThreads = Route.useLoaderData();
+  const { sort } = Route.useSearch();
+  const navigate = useNavigate();
+  const [threads, setThreads] = useState(initialThreads);
+  const [title, setTitle] = useState('');
+  const [body, setBody] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+
+  // SSRデータで初期化
+  useEffect(() => { setThreads(initialThreads); }, [initialThreads]);
+
+  // 5秒ポーリング
+  useEffect(() => {
+    const poll = setInterval(async () => {
+      try {
+        const fresh = await fetchThreads({ data: { sort } });
+        setThreads(fresh);
+      } catch {}
+    }, 5000);
+    return () => clearInterval(poll);
+  }, [sort]);
+
+  const handleSubmit = useCallback(async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!title.trim() || !body.trim()) return;
+    setSubmitting(true);
+    try {
+      await createThreadAction({ data: { title: title.trim(), body: body.trim() } });
+      setTitle('');
+      setBody('');
+      const fresh = await fetchThreads({ data: { sort } });
+      setThreads(fresh);
+    } finally {
+      setSubmitting(false);
+    }
+  }, [title, body, sort]);
+
+  const handleReact = useCallback(async (threadId: string) => {
+    const result = await reactAction({ data: { threadId } });
+    setThreads(prev => prev.map(t =>
+      t.id === threadId ? { ...t, reaction_count: result.reaction_count } : t
+    ));
+  }, []);
 
   return (
     <div>
-      <h2 style={{ marginBottom: '16px' }}>投稿一覧</h2>
+      {/* 投稿フォーム */}
+      <div className="card">
+        <h3 style={{ marginBottom: '8px' }}>💬 うちのブルシット・ジョブを投稿</h3>
+        <form onSubmit={handleSubmit}>
+          <input
+            value={title}
+            onChange={e => setTitle(e.target.value)}
+            placeholder="タイトル（例: 週次報告書の二重入力）"
+            required
+          />
+          <textarea
+            value={body}
+            onChange={e => setBody(e.target.value)}
+            placeholder="何が無駄？どのくらい時間溶けてる？なぜ廃止されない？"
+            required
+          />
+          <button type="submit" disabled={submitting}>
+            {submitting ? '投稿中...' : '投稿する'}
+          </button>
+        </form>
+      </div>
 
+      {/* ソート切替 */}
+      <div style={{ display: 'flex', gap: '8px', margin: '16px 0 8px' }}>
+        <button
+          onClick={() => navigate({ search: { sort: 'hot' } })}
+          style={{ background: sort === 'hot' ? '#1a1a2e' : '#ccc', fontSize: '0.85rem', padding: '4px 12px' }}
+        >
+          🔥 わかる！順
+        </button>
+        <button
+          onClick={() => navigate({ search: { sort: 'new' } })}
+          style={{ background: sort === 'new' ? '#1a1a2e' : '#ccc', fontSize: '0.85rem', padding: '4px 12px' }}
+        >
+          🆕 新着順
+        </button>
+        <span style={{ color: '#999', fontSize: '0.8rem', alignSelf: 'center' }}>
+          {threads.length}件 · 5秒で自動更新
+        </span>
+      </div>
+
+      {/* スレッド一覧 */}
       {threads.map((thread) => (
-        <Link key={thread.id} to="/threads/$id" params={{ id: thread.id }} style={{ textDecoration: 'none', color: 'inherit' }}>
-          <div className="card" style={{ cursor: 'pointer' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div key={thread.id} className="card">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <Link to="/threads/$id" params={{ id: thread.id }} style={{ textDecoration: 'none', color: 'inherit', flex: 1 }}>
               <h3>{thread.title}</h3>
-              <span className={`badge badge-${thread.status}`}>
-                {thread.status === 'fixed' ? '✅ 整理完了' : '🔵 議論中'}
-              </span>
-            </div>
-            <p style={{ color: '#666', marginTop: '4px', fontSize: '0.9rem' }}>
-              {thread.body.length > 100 ? thread.body.slice(0, 100) + '...' : thread.body}
-            </p>
+              <p style={{ color: '#666', marginTop: '4px', fontSize: '0.9rem' }}>
+                {thread.body.length > 80 ? thread.body.slice(0, 80) + '...' : thread.body}
+              </p>
+            </Link>
+            <button
+              onClick={(e) => { e.preventDefault(); handleReact(thread.id); }}
+              style={{ background: '#fff3e0', color: '#e65100', border: '1px solid #ffcc80', minWidth: '70px', padding: '8px', fontSize: '0.9rem' }}
+            >
+              👋 {thread.reaction_count}
+            </button>
           </div>
-        </Link>
+          <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }}>
+            <span className={`badge badge-${thread.status}`}>
+              {thread.status === 'fixed' ? '✅ 整理完了' : '🔵 議論中'}
+            </span>
+          </div>
+        </div>
       ))}
 
       {threads.length === 0 && (
         <div className="card" style={{ textAlign: 'center', color: '#999' }}>
-          まだ投稿がありません。
+          まだ投稿がありません。最初のブルシット・ジョブを投稿してみよう！
         </div>
       )}
     </div>
