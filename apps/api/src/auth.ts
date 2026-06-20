@@ -1,10 +1,15 @@
+/**
+ * Better Auth — Drizzle adapter + D1 + anonymous plugin
+ * aimani-chat の auth.ts パターンを踏襲。
+ * Workers: リクエストごとにインスタンス生成（シングルトンNG）。
+ */
 import { betterAuth } from 'better-auth';
 import { anonymous } from 'better-auth/plugins';
-import { Kysely } from 'kysely';
-import { D1Dialect } from 'kysely-d1';
+import { drizzleAdapter } from 'better-auth/adapters/drizzle';
+import { drizzle } from 'drizzle-orm/d1';
 
 export function createAuth(d1: D1Database, config: { secret: string; baseURL: string }) {
-  const db = new Kysely({ dialect: new D1Dialect({ database: d1 }) });
+  const db = drizzle(d1);
 
   return betterAuth({
     secret: config.secret,
@@ -13,10 +18,9 @@ export function createAuth(d1: D1Database, config: { secret: string; baseURL: st
       'https://bs-job-board-web.masa-nekoshinshi39.workers.dev',
       'http://localhost:5173',
     ],
-    database: {
-      db: db as any,
-      type: 'sqlite',
-    },
+    database: drizzleAdapter(db, {
+      provider: 'sqlite',
+    }),
     plugins: [
       anonymous(),
     ],
