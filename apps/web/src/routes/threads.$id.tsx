@@ -84,7 +84,7 @@ function ThreadDetailPage() {
       </div>
 
       {thread.posts.map((post) => (
-        <div key={post.id} className="post">
+        <div key={post.id} className="post" style={post.role === 'thinking' ? { fontSize: '0.8rem', color: '#888', borderLeftColor: '#eee' } : undefined}>
           <div className="post-header">
             <strong>#{post.post_number}</strong> {post.author_name}
           </div>

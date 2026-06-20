@@ -15,7 +15,6 @@ type Bindings = {
   SAKURA_API_TOKEN: string;
 };
 
-/** AI返信を非同期生成してDBに保存する共通処理 */
 async function dispatchAiReplies(
   db: D1Database,
   sakuraToken: string,
@@ -24,7 +23,6 @@ async function dispatchAiReplies(
   targetBody: string,
   targetPostNumber: number,
 ) {
-  // 既存のpostsを取得してコンテキストに含める（継続対話）
   const existingPosts = await db.prepare(
     'SELECT post_number, author_name, body, author_type FROM posts WHERE thread_id = ? ORDER BY post_number ASC'
   ).bind(threadId).all<{ post_number: number; author_name: string; body: string; author_type: string }>();
@@ -36,9 +34,9 @@ async function dispatchAiReplies(
     authorType: p.author_type,
   }));
 
-  const replyCount = 3 + Math.floor(Math.random() * 5); // 3〜7件
+  const replyCount = 3 + Math.floor(Math.random() * 4); // 3〜6件
 
-  const replies = await generateReplies({
+  const result = await generateReplies({
     threadTitle,
     targetBody,
     recentPosts,
@@ -46,18 +44,27 @@ async function dispatchAiReplies(
     sakuraApiToken: sakuraToken,
   });
 
-  // アンカー割り当て
+  // アンカー割り当て + レス保存
   const existingNumbers = recentPosts.map((p) => p.number);
-  const anchors = assignAnchors(targetPostNumber, existingNumbers, replies.length);
-  const repliesWithAnchors = applyAnchors(replies, anchors);
+  const anchors = assignAnchors(targetPostNumber, existingNumbers, result.replies.length);
+  const repliesWithAnchors = applyAnchors(result.replies, anchors);
 
-  // DBに保存
-  for (let i = 0; i < repliesWithAnchors.length; i++) {
+  for (const reply of repliesWithAnchors) {
     await addPost(db, threadId, {
       author_type: 'ai',
       author_name: '名無しさん@AI',
       role: null,
-      body: repliesWithAnchors[i],
+      body: reply,
+    });
+  }
+
+  // Thinkingを最後のpostとして保存（思考過程の可視化）
+  if (result.thinking) {
+    await addPost(db, threadId, {
+      author_type: 'ai',
+      author_name: '🤔 AIの思考',
+      role: 'thinking',
+      body: result.thinking,
     });
   }
 }
@@ -76,7 +83,6 @@ export const threadRoutes = new Hono<{ Bindings: Bindings }>()
     return c.json(detail);
   })
 
-  // スレッド作成 → AI返信
   .post('/', async (c) => {
     const input = await c.req.json<CreateThreadInput>();
     const { threadId } = await createThread(c.env.DB, input);
@@ -93,13 +99,11 @@ export const threadRoutes = new Hono<{ Bindings: Bindings }>()
     return c.json({ id: threadId, title: input.title }, 201);
   })
 
-  // コメント追加 → AI返信（継続対話）
   .post('/:id/posts', async (c) => {
     const threadId = c.req.param('id');
     const input = await c.req.json<CreatePostInput>();
     const { postId, postNumber } = await addPost(c.env.DB, threadId, input);
 
-    // 人間のコメントにはAIが反応する（継続対話）
     if (input.author_type === 'human' && c.env.SAKURA_API_TOKEN) {
       const thread = await c.env.DB.prepare(
         'SELECT title FROM threads WHERE id = ?'

@@ -1,13 +1,8 @@
 /**
  * ブルシット・ジョブ掲示板 AIレス生成
- *
- * 設計根拠: ADR-002 (slug:9afa44d21378)
- * - recipe.ts方式（原則をLLMに渡して自然に応答）
- * - auto-reply-board口調（2ch風住民）
- * - Responder 5パターンは使わない
+ * ADR-002 (slug:9afa44d21378) 準拠
  */
 
-/** ADR-002 原則 + auto-reply-board口調 */
 const SYSTEM_PROMPT = `あなたは2chふう匿名掲示板の住民です。ブルシット・ジョブについて投稿された内容に自然にレスします。
 
 ## 原則
@@ -21,16 +16,12 @@ const SYSTEM_PROMPT = `あなたは2chふう匿名掲示板の住民です。ブ
 ## 口調
 - 相談員でも教師でもなく、同じスレにいる名無し。
 - わかる、あるある、草、まじか 等は自然に使う。
-- 説教しない。正論で締めない。大げさな社会論を連発しない。
-- 便利さへの軽い驚き、茶化し、あるある、横レスを優先。
+- 説教しない。正論で締めない。
 - >>記号は書かない（アプリ側で付ける）。
 
 ## 禁止
-- 診断（「それは認知の歪みです」）
-- 助言（「〇〇すべき」「〇〇しろ」）
-- 辛辣なツッコミ（「お前のせい」「意味ないなら辞めろ」）
-- 「AIです」と名乗ること
-- 中国語や簡体字
+- 診断・助言・辛辣なツッコミ
+- 「AIです」と名乗る
 - 行頭の番号、JSON、メタ説明
 
 ## 出力形式
@@ -59,13 +50,19 @@ ${params.targetBody}
 ${params.replyCount} 行で返す。本文のみ。`;
 }
 
+export type AiGenerationResult = {
+  replies: string[];
+  thinking: string;
+  rawContent: string;
+};
+
 export async function generateReplies(params: {
   threadTitle: string;
   targetBody: string;
   recentPosts: Array<{ number: number; authorName: string; body: string; authorType: string }>;
   replyCount: number;
   sakuraApiToken: string;
-}): Promise<string[]> {
+}): Promise<AiGenerationResult> {
   const response = await fetch('https://api.ai.sakura.ad.jp/v1/chat/completions', {
     method: 'POST',
     headers: {
@@ -78,7 +75,7 @@ export async function generateReplies(params: {
         { role: 'system', content: SYSTEM_PROMPT },
         { role: 'user', content: buildReplyPrompt(params) },
       ],
-      max_tokens: 800,
+      max_tokens: 1500,
       temperature: 0.7,
     }),
   });
@@ -86,23 +83,25 @@ export async function generateReplies(params: {
   if (!response.ok) throw new Error(`Sakura AI error: ${response.status}`);
 
   const data = await response.json() as {
-    choices: Array<{ message: { content: string | null; reasoning_content?: string } }>;
+    choices: Array<{ message: { content: string | null; reasoning_content?: string }; finish_reason: string }>;
   };
 
-  const reasoning = data.choices[0]?.message?.reasoning_content ?? '';
-  const content = data.choices[0]?.message?.content ?? '';
+  const thinking = data.choices[0]?.message?.reasoning_content ?? '';
+  const rawContent = data.choices[0]?.message?.content ?? '';
+  const finishReason = data.choices[0]?.finish_reason ?? 'unknown';
 
-  // AI出力過程をログに出す（Cloudflare Dashboard Logs / wrangler tailで確認可能）
-  console.log('[AI Think]', reasoning.slice(0, 500));
-  console.log('[AI Content]', content.slice(0, 500));
+  console.log('[AI] finish_reason:', finishReason);
+  console.log('[AI Think]', thinking.slice(0, 500));
+  console.log('[AI Content]', rawContent.slice(0, 500));
 
-  return parseReplies(content || reasoning, params.replyCount);
+  const replies = parseReplies(rawContent || thinking, params.replyCount);
+
+  return { replies, thinking, rawContent };
 }
 
 export function parseReplies(raw: string, count: number): string[] {
   if (!raw) return [];
 
-  // Strategy 1: 引用符内の日本語テキストを抽出（reasoning output対策）
   const quoted = [...raw.matchAll(/"([^"]*[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]+[^"]*)"/g)]
     .map(m => m[1].trim())
     .filter(s => s.length >= 15)
@@ -110,7 +109,6 @@ export function parseReplies(raw: string, count: number): string[] {
 
   if (quoted.length >= count) return quoted.slice(0, count);
 
-  // Strategy 2: 日本語行分割
   const lines = raw.trim()
     .split(/\n+/)
     .map((line) => line.replace(/^\s*(?:[-*>]\s*|\d+[.)、:：]\s*)/, '').trim())
