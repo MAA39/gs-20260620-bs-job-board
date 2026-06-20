@@ -5,15 +5,16 @@ import type { ThreadDetail } from '@bs-job-board/contracts';
 const fetchThreadDetail = createServerFn({ method: 'GET' })
   .validator((input: { id: string }) => input)
   .handler(async ({ data }) => {
-    let apiBase = 'http://localhost:8787';
     try {
-      const mod = await import('cloudflare:workers' as string);
-      apiBase = (mod.env as Record<string, string>).API_BASE_URL ?? apiBase;
-    } catch {}
-
-    const res = await fetch(`${apiBase}/api/v1/threads/${data.id}`);
-    if (!res.ok) throw new Error('Thread not found');
-    return (await res.json()) as ThreadDetail;
+      const { env } = (await import('cloudflare:workers')) as { env: { API: { fetch: typeof fetch } } };
+      const res = await env.API.fetch(`https://api/api/v1/threads/${data.id}`);
+      if (!res.ok) throw new Error('not found');
+      return (await res.json()) as ThreadDetail;
+    } catch {
+      const res = await fetch(`http://localhost:8787/api/v1/threads/${data.id}`);
+      if (!res.ok) throw new Error('not found');
+      return (await res.json()) as ThreadDetail;
+    }
   });
 
 export const Route = createFileRoute('/threads/$id')({
@@ -27,7 +28,6 @@ function ThreadDetailPage() {
   return (
     <div>
       <Link to="/" style={{ color: '#666', textDecoration: 'none', fontSize: '0.9rem' }}>← 一覧に戻る</Link>
-
       <div className="card" style={{ marginTop: '8px' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <h2>{thread.title}</h2>
@@ -36,9 +36,7 @@ function ThreadDetailPage() {
           </span>
         </div>
       </div>
-
       <h3 style={{ margin: '16px 0 8px' }}>レス一覧</h3>
-
       {thread.posts.map((post) => (
         <div key={post.id} className={`post ${post.author_type === 'ai' ? 'post-ai' : ''}`}>
           <div className="post-header">

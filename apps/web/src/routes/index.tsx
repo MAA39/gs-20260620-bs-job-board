@@ -3,18 +3,22 @@ import { createServerFn } from '@tanstack/react-start';
 import type { Thread } from '@bs-job-board/contracts';
 
 const fetchThreads = createServerFn({ method: 'GET' }).handler(async () => {
-  // CF Workers環境: cloudflare:workers からenvを取得
-  // ローカル開発: フォールバック
-  let apiBase = 'http://localhost:8787';
   try {
-    const mod = await import('cloudflare:workers' as string);
-    apiBase = (mod.env as Record<string, string>).API_BASE_URL ?? apiBase;
+    // Service Binding経由でAPI Workerを呼ぶ（CF Workers環境）
+    const { env } = (await import('cloudflare:workers')) as { env: { API: { fetch: typeof fetch } } };
+    const res = await env.API.fetch('https://api/api/v1/threads');
+    if (!res.ok) return [] as Thread[];
+    return (await res.json()) as Thread[];
   } catch {
-    // ローカル開発時はcloudflare:workersが存在しない
+    // ローカル開発時フォールバック
+    try {
+      const res = await fetch('http://localhost:8787/api/v1/threads');
+      if (!res.ok) return [] as Thread[];
+      return (await res.json()) as Thread[];
+    } catch {
+      return [] as Thread[];
+    }
   }
-
-  const res = await fetch(`${apiBase}/api/v1/threads`);
-  return (await res.json()) as Thread[];
 });
 
 export const Route = createFileRoute('/')({
