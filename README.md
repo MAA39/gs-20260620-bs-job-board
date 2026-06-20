@@ -102,3 +102,31 @@ cd apps/web && pnpm deploy
 ### [Enhancement] スレッド上部にAI概要表示
 - 対話が進んだ後にCBTカード的な概要を生成
 - aimani-chat の CbtCardArtifact 構造を参考
+
+## Better Auth 実装計画
+
+### Step 1: パッケージインストール
+- better-auth, kysely, kysely-d1
+
+### Step 2: D1 migration — Better Authテーブル
+- user, session, account, verification (SQLite)
+
+### Step 3: auth設定（リクエストごとにインスタンス生成）
+- D1バインディングはリクエストコンテキスト内のみ有効
+- シングルトンNG → ファクトリ関数
+- anonymous plugin 有効化
+
+### Step 4: Hono ルーティング
+- `/api/auth/**` → Better Auth handler
+
+### Step 5: Web — Better Auth Client
+- createAuthClient + anonymousClient plugin
+- signIn.anonymous() でモーダルから匿名認証
+
+### Step 6: モーダルUI更新
+- localStorage → cookie session に移行
+- 「匿名で投稿する」→ signIn.anonymous()
+
+### Step 7: posts.user_id 紐付け
+- migration: posts に user_id カラム追加
+- API: セッションから user_id 取得して保存
