@@ -83,14 +83,24 @@ function ThreadDetailPage() {
         <span style={{ color: '#999', fontSize: '0.8rem' }}>{thread.posts.length}件 · 5秒で自動更新</span>
       </div>
 
-      {thread.posts.map((post) => (
-        <div key={post.id} className="post" style={post.role === 'thinking' ? { fontSize: '0.8rem', color: '#888', borderLeftColor: '#eee' } : undefined}>
-          <div className="post-header">
-            <strong>#{post.post_number}</strong> {post.author_name}
+      {thread.posts.map((post) => {
+        if (post.role === 'thinking') {
+          return (
+            <details key={post.id} className="post" style={{ fontSize: '0.8rem', color: '#888', borderLeftColor: '#eee', cursor: 'pointer' }}>
+              <summary style={{ padding: '8px 0' }}>🤔 AIの思考過程（タップで展開）</summary>
+              <div style={{ marginTop: '6px', whiteSpace: 'pre-wrap' }}>{post.body}</div>
+            </details>
+          );
+        }
+        return (
+          <div key={post.id} className="post">
+            <div className="post-header">
+              <strong>#{post.post_number}</strong> {post.author_name}
+            </div>
+            <div style={{ marginTop: '6px', whiteSpace: 'pre-wrap' }}>{post.body}</div>
           </div>
-          <div style={{ marginTop: '6px', whiteSpace: 'pre-wrap' }}>{post.body}</div>
-        </div>
-      ))}
+        );
+      })}
 
       <div className="card" style={{ marginTop: '16px' }}>
         <h3 style={{ marginBottom: '8px' }}>💬 レスする（AIも反応するよ）</h3>

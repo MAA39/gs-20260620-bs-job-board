@@ -1,6 +1,7 @@
 /**
  * ブルシット・ジョブ掲示板 AIレス生成
  * ADR-002 (slug:9afa44d21378) 準拠
+ * structured output（JSON mode）でレスとthinkingを分離
  */
 
 const SYSTEM_PROMPT = `あなたは2chふう匿名掲示板の住民です。ブルシット・ジョブについて投稿された内容に自然にレスします。
@@ -22,10 +23,11 @@ const SYSTEM_PROMPT = `あなたは2chふう匿名掲示板の住民です。ブ
 ## 禁止
 - 診断・助言・辛辣なツッコミ
 - 「AIです」と名乗る
-- 行頭の番号、JSON、メタ説明
 
-## 出力形式
-返信文だけを指定件数ぴったりの行数で返す。各返信は一文で、30〜90文字。`;
+## 出力形式（厳守）
+必ず以下のJSON形式だけを出力する。前置きや説明は一切不要。
+{"replies": ["レス1", "レス2", ...]}
+各レスは一文で30〜90文字。指定件数ぴったり。`;
 
 export function buildReplyPrompt(params: {
   threadTitle: string;
@@ -39,15 +41,12 @@ export function buildReplyPrompt(params: {
     .join('\n');
 
   return `スレッド名: ${params.threadTitle}
-必要な返信数: ${params.replyCount}件
-
 直近の流れ:
 ${history || '(最初の投稿)'}
 
-返信対象:
-${params.targetBody}
+返信対象: ${params.targetBody}
 
-${params.replyCount} 行で返す。本文のみ。`;
+返信${params.replyCount}件をJSON形式で。`;
 }
 
 export type AiGenerationResult = {
@@ -71,6 +70,7 @@ export async function generateReplies(params: {
     },
     body: JSON.stringify({
       model: 'gpt-oss-120b',
+      response_format: { type: 'json_object' },
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
         { role: 'user', content: buildReplyPrompt(params) },
@@ -88,38 +88,45 @@ export async function generateReplies(params: {
 
   const thinking = data.choices[0]?.message?.reasoning_content ?? '';
   const rawContent = data.choices[0]?.message?.content ?? '';
-  const finishReason = data.choices[0]?.finish_reason ?? 'unknown';
 
-  console.log('[AI] finish_reason:', finishReason);
-  console.log('[AI Think]', thinking.slice(0, 500));
-  console.log('[AI Content]', rawContent.slice(0, 500));
+  console.log('[AI] finish_reason:', data.choices[0]?.finish_reason);
+  console.log('[AI Think]', thinking.slice(0, 300));
+  console.log('[AI Content]', rawContent.slice(0, 300));
 
-  // content と reasoning の両方から日本語レスを抽出（どちらに入るか不定）
-  const allText = [rawContent, thinking].filter(Boolean).join('\n');
-  const replies = parseReplies(allText, params.replyCount);
+  // JSON パース（auto-reply-board の parseReplies 準拠）
+  const replies = parseJsonReplies(rawContent, params.replyCount);
 
   return { replies, thinking, rawContent };
 }
 
-export function parseReplies(raw: string, count: number): string[] {
+/** JSON形式のレスをパース */
+function parseJsonReplies(raw: string, count: number): string[] {
   if (!raw) return [];
 
-  const quoted = [...raw.matchAll(/"([^"]*[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]+[^"]*)"/g)]
-    .map(m => m[1].trim())
-    .filter(s => s.length >= 15)
-    .filter(s => !/\(\d+\)/.test(s));
+  try {
+    const cleaned = raw.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+    const parsed = JSON.parse(cleaned);
+    if (Array.isArray(parsed?.replies)) {
+      return parsed.replies
+        .map((r: unknown) => String(r).trim())
+        .filter((r: string) => r.length >= 5)
+        .slice(0, count);
+    }
+  } catch {
+    // JSON失敗時は行分割フォールバック
+  }
 
-  if (quoted.length >= count) return quoted.slice(0, count);
+  return parseLineReplies(raw, count);
+}
 
-  const lines = raw.trim()
+/** フォールバック: 行分割 */
+function parseLineReplies(raw: string, count: number): string[] {
+  return raw.trim()
     .split(/\n+/)
     .map((line) => line.replace(/^\s*(?:[-*>]\s*|\d+[.)、:：]\s*)/, '').trim())
     .filter((line) => line.length >= 15)
     .filter((line) => /^[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]/.test(line))
-    .filter((line) => !/JSON|System|Line\d|Count|Check|Sentence|^We |^Let|^Need/.test(line))
-    .filter((line) => !/\(\d+\)/.test(line));
-
-  return (lines.length > 0 ? lines : quoted).slice(0, count);
+    .slice(0, count);
 }
 
 export function assignAnchors(
