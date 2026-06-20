@@ -1,1 +1,7 @@
-export { generateDeepDiveQuestion, parseAnalysisResponse } from './analyze.ts';
+export {
+  generateReplies,
+  parseReplies,
+  buildReplyPrompt,
+  assignAnchors,
+  applyAnchors,
+} from './analyze.ts';

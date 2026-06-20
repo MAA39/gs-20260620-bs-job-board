@@ -1,42 +1,99 @@
 import { createFileRoute, Link } from '@tanstack/react-router';
 import { createServerFn } from '@tanstack/react-start';
+import { useState, useEffect, useCallback } from 'react';
 import type { ThreadDetail } from '@bs-job-board/contracts';
 
-const fetchThreadDetail = createServerFn({ method: 'GET' })
+async function getApi() {
+  try {
+    const { env } = (await import('cloudflare:workers')) as { env: { API: { fetch: typeof fetch } } };
+    return (url: string, init?: RequestInit) => env.API.fetch(`https://api${url}`, init);
+  } catch {
+    return (url: string, init?: RequestInit) => fetch(`http://localhost:8787${url}`, init);
+  }
+}
+
+const fetchDetail = createServerFn({ method: 'GET' })
   .validator((input: { id: string }) => input)
   .handler(async ({ data }) => {
-    try {
-      const { env } = (await import('cloudflare:workers')) as { env: { API: { fetch: typeof fetch } } };
-      const res = await env.API.fetch(`https://api/api/v1/threads/${data.id}`);
-      if (!res.ok) throw new Error('not found');
-      return (await res.json()) as ThreadDetail;
-    } catch {
-      const res = await fetch(`http://localhost:8787/api/v1/threads/${data.id}`);
-      if (!res.ok) throw new Error('not found');
-      return (await res.json()) as ThreadDetail;
-    }
+    const api = await getApi();
+    const res = await api(`/api/v1/threads/${data.id}`);
+    if (!res.ok) throw new Error('not found');
+    return (await res.json()) as ThreadDetail;
+  });
+
+const addComment = createServerFn({ method: 'POST' })
+  .validator((input: { threadId: string; body: string }) => input)
+  .handler(async ({ data }) => {
+    const api = await getApi();
+    await api(`/api/v1/threads/${data.threadId}/posts`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        author_type: 'human',
+        author_name: '名無しさん',
+        role: 'comment',
+        body: data.body,
+      }),
+    });
   });
 
 export const Route = createFileRoute('/threads/$id')({
-  loader: ({ params }) => fetchThreadDetail({ data: { id: params.id } }),
+  loader: ({ params }) => fetchDetail({ data: { id: params.id } }),
   component: ThreadDetailPage,
 });
 
 function ThreadDetailPage() {
-  const thread = Route.useLoaderData();
+  const initialThread = Route.useLoaderData();
+  const params = Route.useParams();
+  const [thread, setThread] = useState(initialThread);
+  const [comment, setComment] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => { setThread(initialThread); }, [initialThread]);
+
+  // 5秒ポーリング（AIレスが非同期で追加されるため）
+  useEffect(() => {
+    const poll = setInterval(async () => {
+      try {
+        const fresh = await fetchDetail({ data: { id: params.id } });
+        setThread(fresh);
+      } catch {}
+    }, 5000);
+    return () => clearInterval(poll);
+  }, [params.id]);
+
+  const handleComment = useCallback(async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!comment.trim()) return;
+    setSubmitting(true);
+    try {
+      await addComment({ data: { threadId: params.id, body: comment.trim() } });
+      setComment('');
+      // 即座にリフレッシュ
+      const fresh = await fetchDetail({ data: { id: params.id } });
+      setThread(fresh);
+    } finally {
+      setSubmitting(false);
+    }
+  }, [comment, params.id]);
 
   return (
     <div>
       <Link to="/" style={{ color: '#666', textDecoration: 'none', fontSize: '0.9rem' }}>← 一覧に戻る</Link>
+
       <div className="card" style={{ marginTop: '8px' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <h2>{thread.title}</h2>
-          <span className={`badge badge-${thread.status}`}>
-            {thread.status === 'fixed' ? '✅ 整理完了' : '🔵 議論中'}
-          </span>
-        </div>
+        <h2>{thread.title}</h2>
+        <p style={{ color: '#666', marginTop: '4px' }}>{thread.body}</p>
+        <span className={`badge badge-${thread.status}`} style={{ marginTop: '8px', display: 'inline-block' }}>
+          {thread.status === 'fixed' ? '✅ 整理完了' : '🔵 議論中'}
+        </span>
       </div>
-      <h3 style={{ margin: '16px 0 8px' }}>レス一覧</h3>
+
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', margin: '16px 0 8px' }}>
+        <h3>レス一覧</h3>
+        <span style={{ color: '#999', fontSize: '0.8rem' }}>{thread.posts.length}件 · 5秒で自動更新</span>
+      </div>
+
       {thread.posts.map((post) => (
         <div key={post.id} className={`post ${post.author_type === 'ai' ? 'post-ai' : ''}`}>
           <div className="post-header">
@@ -45,11 +102,27 @@ function ThreadDetailPage() {
               {post.author_type === 'ai' ? '🤖 AI' : '👤 人間'}
             </span>{' '}
             {post.author_name}
-            {post.role && <span style={{ marginLeft: '8px', color: '#999' }}>({post.role})</span>}
           </div>
           <div style={{ marginTop: '8px', whiteSpace: 'pre-wrap' }}>{post.body}</div>
         </div>
       ))}
+
+      {/* コメントフォーム（継続対話） */}
+      <div className="card" style={{ marginTop: '16px' }}>
+        <h3 style={{ marginBottom: '8px' }}>💬 レスする（AIも反応するよ）</h3>
+        <form onSubmit={handleComment}>
+          <textarea
+            value={comment}
+            onChange={e => setComment(e.target.value)}
+            placeholder="「うちもそう」「なんでそれ続いてるん？」「こうしたらどう？」..."
+            required
+            style={{ minHeight: '80px' }}
+          />
+          <button type="submit" disabled={submitting}>
+            {submitting ? '投稿中...' : 'レスする'}
+          </button>
+        </form>
+      </div>
     </div>
   );
 }
