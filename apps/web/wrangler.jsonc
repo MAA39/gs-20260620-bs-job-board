@@ -1,0 +1,14 @@
+{
+  "$schema": "https://workers.cloudflare.com/schema/wrangler.json",
+  "name": "bs-job-board-web",
+  "compatibility_date": "2026-06-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "main": "@tanstack/react-start/server-entry",
+  // Service Binding to api Worker
+  "services": [
+    {
+      "binding": "API",
+      "service": "bs-job-board-api"
+    }
+  ]
+}

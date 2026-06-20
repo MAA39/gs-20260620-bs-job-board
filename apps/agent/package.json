@@ -1,0 +1,20 @@
+{
+  "name": "@bs-job-board/agent",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "flue dev",
+    "build": "flue build",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@bs-job-board/contracts": "workspace:*",
+    "@flue/runtime": "^1.0.0-beta.2",
+    "hono": "^4.12.0"
+  },
+  "devDependencies": {
+    "@flue/cli": "^1.0.0-beta.1",
+    "typescript": "^5.8.0"
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "$schema": "https://workers.cloudflare.com/schema/wrangler.json",
+  "name": "bs-job-board-api",
+  "compatibility_date": "2026-06-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "main": "src/index.ts",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "bs-job-board-db",
+      "database_id": "placeholder-create-with-wrangler-d1-create"
+    }
+  ],
+  "observability": {
+    "enabled": true
+  }
+}
