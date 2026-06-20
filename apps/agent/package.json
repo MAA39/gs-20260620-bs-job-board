@@ -8,7 +8,7 @@
   },
   "dependencies": {
     "@flue/runtime": "^1.0.0-beta.2",
-    "agents": "^0.14.5",
+    "agents": "^0.16.2",
     "hono": "^4.12.0"
   },
   "devDependencies": {
