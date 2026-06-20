@@ -89,23 +89,43 @@ function ThreadDetailPage() {
     setThread(await fetchDetail({ data: { id: params.id } }));
   }, [thread.status, params.id]);
 
-  // グルーピング: 人間の投稿を基準にAIレスをぶら下げる
-  const grouped = useMemo(() => {
-    const posts = thread.posts;
-    const humanPosts = posts.filter(p => p.author_type === 'human');
-    const result: Array<{ human: Post; aiReplies: Post[]; thinking: Post[] }> = [];
+  // post_number順に統合表示。人間postの直後に紐づくAIレスをぶら下げる
+  const displayItems = useMemo(() => {
+    const posts = [...thread.posts].sort((a, b) => a.post_number - b.post_number);
+    const grouped = new Set<string>(); // グルーピング済みのpost ID
+    const items: Array<{ type: 'post'; post: Post; indent: boolean } | { type: 'thinking'; post: Post }> = [];
 
-    for (const hp of humanPosts) {
-      const aiReplies = posts.filter(p => p.author_type === 'ai' && p.role !== 'thinking' && p.source_post_number === hp.post_number);
-      const thinking = posts.filter(p => p.role === 'thinking' && p.source_post_number === hp.post_number);
-      result.push({ human: hp, aiReplies, thinking });
+    for (const post of posts) {
+      if (grouped.has(post.id)) continue;
+      if (post.role === 'thinking') continue; // thinkingは後で
+
+      items.push({ type: 'post', post, indent: false });
+      grouped.add(post.id);
+
+      // この投稿に紐づくAIレスをぶら下げる
+      if (post.author_type === 'human') {
+        const children = posts.filter(p => p.source_post_number === post.post_number && p.role !== 'thinking' && !grouped.has(p.id));
+        for (const child of children) {
+          items.push({ type: 'post', post: child, indent: true });
+          grouped.add(child.id);
+        }
+        // thinking
+        const thinks = posts.filter(p => p.source_post_number === post.post_number && p.role === 'thinking' && !grouped.has(p.id));
+        for (const t of thinks) {
+          items.push({ type: 'thinking', post: t });
+          grouped.add(t.id);
+        }
+      }
     }
 
-    // source_post_number が null の孤立AIレス（既存データ）
-    const orphans = posts.filter(p => p.author_type === 'ai' && p.role !== 'thinking' && p.source_post_number == null);
-    const orphanThink = posts.filter(p => p.role === 'thinking' && p.source_post_number == null);
+    // 残りのthinking（source_post_number null）
+    for (const post of posts) {
+      if (!grouped.has(post.id) && post.role === 'thinking') {
+        items.push({ type: 'thinking', post });
+      }
+    }
 
-    return { groups: result, orphans, orphanThink };
+    return items;
   }, [thread.posts]);
 
   return (
@@ -129,35 +149,25 @@ function ThreadDetailPage() {
         <span>{thread.posts.filter(p => p.role !== 'thinking').length}件{streaming ? ' · AI生成中...' : ' · 5秒で自動更新'}</span>
       </div>
 
-      {/* 孤立AIレス（既存データ、source_post_number なし） */}
-      {grouped.orphans.map((post) => (
-        <div key={post.id} className="post post-ai">
-          <div className="post-header"><strong>{post.post_number}</strong><span>{post.author_name}</span></div>
-          <div className="post-body">{post.body}</div>
-        </div>
-      ))}
-
-      {/* グルーピング表示 */}
-      {grouped.groups.map(({ human, aiReplies, thinking }) => (
-        <div key={human.id}>
-          {/* 人間の投稿 */}
-          <div className="post">
-            <div className="post-header"><strong>{human.post_number}</strong><span>{human.author_name}</span></div>
-            <div className="post-body">{human.body}</div>
-          </div>
-
-          {/* ぶら下がりAIレス */}
-          <div style={{ marginLeft: '16px' }}>
-            {aiReplies.map((post) => (
-              <div key={post.id} className="post post-ai">
-                <div className="post-header"><strong>{post.post_number}</strong><span>{post.author_name}</span></div>
-                <div className="post-body">{post.body}</div>
-              </div>
-            ))}
-
-            {/* SSEストリーミング（この人間コメントの下に表示） */}
-            {streaming && streamSourceNum === human.post_number && (
-              <>
+      {displayItems.map((item, idx) => {
+        if (item.type === 'thinking') {
+          return (
+            <details key={item.post.id} className="thinking" style={{ marginLeft: '16px' }}>
+              <summary>🤔 AIの思考過程（タップで展開）</summary>
+              <div style={{ marginTop: '8px', whiteSpace: 'pre-wrap' }}>{item.post.body}</div>
+            </details>
+          );
+        }
+        const post = item.post;
+        const isLastHuman = post.author_type === 'human' && streaming && streamSourceNum === post.post_number;
+        return (
+          <div key={post.id}>
+            <div className={`post ${post.author_type === 'ai' ? 'post-ai' : ''}`} style={item.indent ? { marginLeft: '16px' } : undefined}>
+              <div className="post-header"><strong>{post.post_number}</strong><span>{post.author_name}</span></div>
+              <div className="post-body">{post.body}</div>
+            </div>
+            {isLastHuman && (
+              <div style={{ marginLeft: '16px' }}>
                 {streamThinking && (
                   <div className="post" style={{ background: '#fff8e1', borderStyle: 'dashed' }}>
                     <div className="post-header"><strong style={{ background: '#f0b429' }}>...</strong><span>🤔 思考中</span></div>
@@ -170,25 +180,11 @@ function ThreadDetailPage() {
                     <div className="post-body">{streamContent}<span style={{ display: 'inline-block', width: '2px', height: '1em', background: '#20211d', animation: 'blink 1s infinite' }} /></div>
                   </div>
                 )}
-              </>
+              </div>
             )}
-
-            {thinking.map((post) => (
-              <details key={post.id} className="thinking">
-                <summary>🤔 AIの思考過程（タップで展開）</summary>
-                <div style={{ marginTop: '8px', whiteSpace: 'pre-wrap' }}>{post.body}</div>
-              </details>
-            ))}
           </div>
-        </div>
-      ))}
-
-      {grouped.orphanThink.map((post) => (
-        <details key={post.id} className="thinking">
-          <summary>🤔 AIの思考過程（タップで展開）</summary>
-          <div style={{ marginTop: '8px', whiteSpace: 'pre-wrap' }}>{post.body}</div>
-        </details>
-      ))}
+        );
+      })}
 
       <div className="card" style={{ marginTop: '16px' }}>
         <p className="eyebrow">Reply</p>
