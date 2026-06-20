@@ -1,11 +1,11 @@
-/**
- * Better Auth設定 — D1 + Kysely + anonymous plugin
- * Workers環境: リクエストごとにインスタンス生成（シングルトンNG）
- */
 import { betterAuth } from 'better-auth';
 import { anonymous } from 'better-auth/plugins';
+import { Kysely } from 'kysely';
+import { D1Dialect } from 'kysely-d1';
 
-export function createAuth(db: D1Database, config: { secret: string; baseURL: string }) {
+export function createAuth(d1: D1Database, config: { secret: string; baseURL: string }) {
+  const db = new Kysely({ dialect: new D1Dialect({ database: d1 }) });
+
   return betterAuth({
     secret: config.secret,
     baseURL: config.baseURL,
@@ -15,7 +15,7 @@ export function createAuth(db: D1Database, config: { secret: string; baseURL: st
     ],
     database: {
       db: db as any,
-      type: 'sqlite' as const,
+      type: 'sqlite',
     },
     plugins: [
       anonymous(),
