@@ -85,3 +85,20 @@ cd apps/web && pnpm deploy
 
 - [Linear プロジェクト](https://linear.app/100days100prd/project/ブルシットジョブ解体掲示板-0a51388bf751)
 - [ADR-001: 技術選定](https://linear.app/100days100prd/document/adr-001-技術選定-cf-workers-tanstack-start-hono-d1-flue-baa3151180a1)
+
+## 残タスク
+
+### [Bug] UIグルーピング表示の修正
+- post_number重複（race condition対策）
+- thinkingが人間コメント直上に出るケースの修正
+- AIレスのインデント明確化
+- 既存データ（source_post_number null）のグルーピング安定化
+
+### [Phase2] Better Auth — GS-9
+- GitHub OAuth App設定（PCから）
+- 匿名ログイン + GitHubログイン
+- 投稿時のダイアログUI
+
+### [Enhancement] スレッド上部にAI概要表示
+- 対話が進んだ後にCBTカード的な概要を生成
+- aimani-chat の CbtCardArtifact 構造を参考
