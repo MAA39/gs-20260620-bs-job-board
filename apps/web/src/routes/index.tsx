@@ -2,10 +2,18 @@ import { createFileRoute, Link } from '@tanstack/react-router';
 import { createServerFn } from '@tanstack/react-start';
 import type { Thread } from '@bs-job-board/contracts';
 
-const API_BASE = process.env.API_BASE_URL ?? 'http://localhost:8787';
-
 const fetchThreads = createServerFn({ method: 'GET' }).handler(async () => {
-  const res = await fetch(`${API_BASE}/api/v1/threads`);
+  // CF Workers環境: cloudflare:workers からenvを取得
+  // ローカル開発: フォールバック
+  let apiBase = 'http://localhost:8787';
+  try {
+    const mod = await import('cloudflare:workers' as string);
+    apiBase = (mod.env as Record<string, string>).API_BASE_URL ?? apiBase;
+  } catch {
+    // ローカル開発時はcloudflare:workersが存在しない
+  }
+
+  const res = await fetch(`${apiBase}/api/v1/threads`);
   return (await res.json()) as Thread[];
 });
 
@@ -31,7 +39,7 @@ function HomePage() {
               </span>
             </div>
             <p style={{ color: '#666', marginTop: '4px', fontSize: '0.9rem' }}>
-              {thread.body.slice(0, 100)}...
+              {thread.body.length > 100 ? thread.body.slice(0, 100) + '...' : thread.body}
             </p>
           </div>
         </Link>
@@ -39,18 +47,9 @@ function HomePage() {
 
       {threads.length === 0 && (
         <div className="card" style={{ textAlign: 'center', color: '#999' }}>
-          まだ投稿がありません。最初のブルシット・ジョブを投稿してみましょう。
+          まだ投稿がありません。
         </div>
       )}
-
-      <div className="card" style={{ marginTop: '24px' }}>
-        <h3 style={{ marginBottom: '12px' }}>新しいブルシット・ジョブを投稿</h3>
-        <form method="POST" action="/api/create-thread">
-          <input name="title" placeholder="タイトル（例: 週次報告書の二重入力）" required />
-          <textarea name="body" placeholder="詳しく書いてください。何が無駄だと感じるか、どのくらいの時間がかかっているか等..." required />
-          <button type="submit">投稿する</button>
-        </form>
-      </div>
     </div>
   );
 }

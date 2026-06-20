@@ -34,13 +34,15 @@ export const threadRoutes = new Hono<{ Bindings: Bindings }>()
     const { threadId } = await createThread(c.env.DB, input);
 
     // agent Worker に分析依頼（非同期、レスポンスは待たない）
-    c.executionCtx.waitUntil(
-      c.env.AGENT.fetch(new Request('https://agent/dispatch-analysis', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ threadId, title: input.title, body: input.body }),
-      })).catch((err) => console.error('Agent dispatch failed:', err))
-    );
+    if (c.env.AGENT) {
+      c.executionCtx.waitUntil(
+        c.env.AGENT.fetch(new Request('https://agent/dispatch-analysis', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ threadId, title: input.title, body: input.body }),
+        })).catch((err) => console.error('Agent dispatch failed:', err))
+      );
+    }
 
     return c.json({ id: threadId, title: input.title }, 201);
   })
