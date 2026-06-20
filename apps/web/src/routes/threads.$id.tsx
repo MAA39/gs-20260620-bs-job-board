@@ -72,8 +72,14 @@ function ThreadDetailPage() {
     }
   }, [params.id]);
 
+  const [showAuthModal, setShowAuthModal] = useState(false);
+
+  const isAuth = typeof window !== 'undefined' && !!localStorage.getItem('bs-user-id');
+
   const handleComment = useCallback(async (e: React.FormEvent) => {
-    e.preventDefault(); if (!comment.trim()) return; setSubmitting(true);
+    e.preventDefault(); if (!comment.trim()) return;
+    if (!isAuth) { setShowAuthModal(true); return; }
+    setSubmitting(true);
     try {
       await addComment({ data: { threadId: params.id, body: comment.trim() } });
       setComment('');
@@ -82,7 +88,14 @@ function ThreadDetailPage() {
       const lastPost = fresh.posts[fresh.posts.length - 1];
       startAiStream(lastPost.post_number);
     } finally { setSubmitting(false); }
-  }, [comment, params.id, startAiStream]);
+  }, [comment, params.id, startAiStream, isAuth]);
+
+  const handleAnonAuth = useCallback(() => {
+    const id = crypto.randomUUID();
+    localStorage.setItem('bs-user-id', id);
+    localStorage.setItem('bs-user-name', '名無しさん');
+    setShowAuthModal(false);
+  }, []);
 
   const handleFix = useCallback(async () => {
     await fixThread({ data: { threadId: params.id, status: thread.status === 'fixed' ? 'open' : 'fixed' } });
@@ -209,6 +222,18 @@ function ThreadDetailPage() {
           <button type="submit" disabled={submitting || streaming}>{submitting ? '送信中...' : streaming ? 'AI生成中...' : 'レスする'}</button>
         </form>
       </div>
+
+      {showAuthModal && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'grid', placeItems: 'center', zIndex: 100 }} onClick={() => setShowAuthModal(false)}>
+          <div className="card" style={{ maxWidth: '360px', margin: '16px', boxShadow: '8px 8px 0 rgba(32,33,29,0.86)' }} onClick={e => e.stopPropagation()}>
+            <p className="eyebrow">First post</p>
+            <h3 style={{ fontFamily: 'Georgia, serif', margin: '8px 0 16px' }}>投稿するには</h3>
+            <button onClick={handleAnonAuth} style={{ width: '100%', marginBottom: '8px' }}>👤 匿名で投稿する</button>
+            <button disabled style={{ width: '100%', background: '#ddd', color: '#999' }}>🔗 GitHubでログイン（準備中）</button>
+            <p style={{ fontSize: '0.8rem', color: '#888', marginTop: '12px' }}>匿名IDはこのブラウザに保存されます。</p>
+          </div>
+        </div>
+      )}
 
       <style dangerouslySetInnerHTML={{ __html: '@keyframes blink{0%,50%{opacity:1}51%,100%{opacity:0}}' }} />
     </div>

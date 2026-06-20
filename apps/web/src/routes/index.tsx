@@ -38,8 +38,18 @@ const reactAction = createServerFn({ method: 'POST' })
 
 function getUserId(): string {
   if (typeof window === 'undefined') return '';
-  let id = localStorage.getItem('bs-user-id');
-  if (!id) { id = crypto.randomUUID(); localStorage.setItem('bs-user-id', id); }
+  return localStorage.getItem('bs-user-id') ?? '';
+}
+
+function isAuthenticated(): boolean {
+  if (typeof window === 'undefined') return false;
+  return !!localStorage.getItem('bs-user-id');
+}
+
+function authenticateAnonymous(): string {
+  const id = crypto.randomUUID();
+  localStorage.setItem('bs-user-id', id);
+  localStorage.setItem('bs-user-name', '名無しさん');
   return id;
 }
 
@@ -67,13 +77,29 @@ function HomePage() {
     return () => clearInterval(poll);
   }, [sort]);
 
+  const [showAuthModal, setShowAuthModal] = useState(false);
+  const [pendingAction, setPendingAction] = useState<'post' | null>(null);
+
   const handleSubmit = useCallback(async (e: React.FormEvent) => {
     e.preventDefault();
     if (!title.trim() || !body.trim()) return;
+    if (!isAuthenticated()) { setPendingAction('post'); setShowAuthModal(true); return; }
     setSubmitting(true);
     try { await createThreadAction({ data: { title: title.trim(), body: body.trim() } }); setTitle(''); setBody(''); setThreads(await fetchThreads({ data: { sort } })); }
     finally { setSubmitting(false); }
   }, [title, body, sort]);
+
+  const handleAnonymousAuth = useCallback(async () => {
+    const id = authenticateAnonymous();
+    setUserId(id);
+    setShowAuthModal(false);
+    if (pendingAction === 'post' && title.trim() && body.trim()) {
+      setSubmitting(true);
+      try { await createThreadAction({ data: { title: title.trim(), body: body.trim() } }); setTitle(''); setBody(''); setThreads(await fetchThreads({ data: { sort } })); }
+      finally { setSubmitting(false); }
+    }
+    setPendingAction(null);
+  }, [pendingAction, title, body, sort]);
 
   const handleReact = useCallback(async (threadId: string) => {
     if (!userId) return;
@@ -116,6 +142,23 @@ function HomePage() {
       ))}
 
       {threads.length === 0 && <div className="card" style={{ textAlign: 'center', color: '#555041' }}>まだスレッドがありません。</div>}
+
+      {/* 匿名認証モーダル */}
+      {showAuthModal && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'grid', placeItems: 'center', zIndex: 100 }} onClick={() => setShowAuthModal(false)}>
+          <div className="card" style={{ maxWidth: '360px', margin: '16px', boxShadow: '8px 8px 0 rgba(32,33,29,0.86)' }} onClick={e => e.stopPropagation()}>
+            <p className="eyebrow">First post</p>
+            <h3 style={{ fontFamily: 'Georgia, serif', margin: '8px 0 16px' }}>投稿するには</h3>
+            <button onClick={handleAnonymousAuth} style={{ width: '100%', marginBottom: '8px' }}>
+              👤 匿名で投稿する
+            </button>
+            <button disabled style={{ width: '100%', background: '#ddd', color: '#999' }}>
+              🔗 GitHubでログイン（準備中）
+            </button>
+            <p style={{ fontSize: '0.8rem', color: '#888', marginTop: '12px' }}>匿名IDはこのブラウザに保存されます。</p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
