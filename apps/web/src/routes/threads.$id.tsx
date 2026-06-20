@@ -89,39 +89,55 @@ function ThreadDetailPage() {
     setThread(await fetchDetail({ data: { id: params.id } }));
   }, [thread.status, params.id]);
 
-  // post_number順に統合表示。人間postの直後に紐づくAIレスをぶら下げる
+  // post_number順に統合表示。人間postの直後に紐づくAI+thinkingをぶら下げる
   const displayItems = useMemo(() => {
     const posts = [...thread.posts].sort((a, b) => a.post_number - b.post_number);
-    const grouped = new Set<string>(); // グルーピング済みのpost ID
+    const grouped = new Set<string>();
     const items: Array<{ type: 'post'; post: Post; indent: boolean } | { type: 'thinking'; post: Post }> = [];
 
     for (const post of posts) {
       if (grouped.has(post.id)) continue;
-      if (post.role === 'thinking') continue; // thinkingは後で
+
+      // thinkingはスキップ（親postの直後にぶら下げる）
+      if (post.role === 'thinking') continue;
 
       items.push({ type: 'post', post, indent: false });
       grouped.add(post.id);
 
-      // この投稿に紐づくAIレスをぶら下げる
+      // 人間postの直後に紐づくAI + thinking をぶら下げる
       if (post.author_type === 'human') {
+        // source_post_numberで紐づくAIレス
         const children = posts.filter(p => p.source_post_number === post.post_number && p.role !== 'thinking' && !grouped.has(p.id));
         for (const child of children) {
           items.push({ type: 'post', post: child, indent: true });
           grouped.add(child.id);
         }
-        // thinking
+        // source_post_numberで紐づくthinking
         const thinks = posts.filter(p => p.source_post_number === post.post_number && p.role === 'thinking' && !grouped.has(p.id));
         for (const t of thinks) {
           items.push({ type: 'thinking', post: t });
           grouped.add(t.id);
         }
-      }
-    }
 
-    // 残りのthinking（source_post_number null）
-    for (const post of posts) {
-      if (!grouped.has(post.id) && post.role === 'thinking') {
-        items.push({ type: 'thinking', post });
+        // source_post_number null のAI+thinkingも、post_number的に次の人間postの前まで取り込む
+        const nextHuman = posts.find(p => p.author_type === 'human' && p.post_number > post.post_number);
+        const ceiling = nextHuman ? nextHuman.post_number : Infinity;
+        const orphanChildren = posts.filter(p =>
+          !grouped.has(p.id) && p.author_type === 'ai' && p.role !== 'thinking' &&
+          p.source_post_number == null && p.post_number > post.post_number && p.post_number < ceiling
+        );
+        for (const child of orphanChildren) {
+          items.push({ type: 'post', post: child, indent: true });
+          grouped.add(child.id);
+        }
+        const orphanThinks = posts.filter(p =>
+          !grouped.has(p.id) && p.role === 'thinking' &&
+          p.source_post_number == null && p.post_number > post.post_number && p.post_number < ceiling
+        );
+        for (const t of orphanThinks) {
+          items.push({ type: 'thinking', post: t });
+          grouped.add(t.id);
+        }
       }
     }
 
