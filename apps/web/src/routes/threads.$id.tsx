@@ -194,32 +194,33 @@ function ThreadDetailPage() {
       {displayItems.map((item, idx) => {
         if (item.type === 'thinking') {
           return (
-            <details key={item.post.id} className="thinking" style={{ marginLeft: '16px' }}>
+            <details key={item.post.id} className="thinking" style={{ marginLeft: '12px', borderLeft: '3px solid #c4b89a' }}>
               <summary>🤔 AIの思考過程（タップで展開）</summary>
-              <div style={{ marginTop: '8px', whiteSpace: 'pre-wrap' }}>{item.post.body}</div>
+              <div style={{ marginTop: '8px', whiteSpace: 'pre-wrap', fontSize: '0.85rem', color: '#555' }}>{item.post.body}</div>
             </details>
           );
         }
         const post = item.post;
         const isLastHuman = post.author_type === 'human' && streaming && streamSourceNum === post.post_number;
+        const indentStyle = item.indent ? { marginLeft: '12px', borderLeft: '3px solid #c4b89a', paddingLeft: '0' } : undefined;
         return (
           <div key={post.id}>
-            <div className={`post ${post.author_type === 'ai' ? 'post-ai' : ''}`} style={item.indent ? { marginLeft: '16px' } : undefined}>
+            <div className={`post ${post.author_type === 'ai' ? 'post-ai' : ''}`} style={indentStyle}>
               <div className="post-header"><strong>{post.post_number}</strong><span>{post.author_name}</span></div>
               <div className="post-body">{post.body}</div>
             </div>
             {isLastHuman && (
-              <div style={{ marginLeft: '16px' }}>
+              <div style={{ marginLeft: '12px', borderLeft: '3px solid #2f7d68' }}>
                 {streamThinking && (
                   <div className="post" style={{ background: '#fff8e1', borderStyle: 'dashed' }}>
                     <div className="post-header"><strong style={{ background: '#f0b429' }}>...</strong><span>🤔 思考中</span></div>
-                    <div className="post-body" style={{ fontSize: '0.8rem', color: '#666' }}>{streamThinking}<span style={{ display: 'inline-block', width: '2px', height: '1em', background: '#20211d', animation: 'blink 1s infinite' }} /></div>
+                    <div className="post-body" style={{ fontSize: '0.8rem', color: '#666' }}>{streamThinking}<span className="cursor" /></div>
                   </div>
                 )}
                 {streamContent && (
                   <div className="post" style={{ background: '#eef5ef', borderStyle: 'dashed' }}>
                     <div className="post-header"><strong style={{ background: '#2f7d68' }}>...</strong><span>名無しさん@AI（生成中）</span></div>
-                    <div className="post-body">{streamContent}<span style={{ display: 'inline-block', width: '2px', height: '1em', background: '#20211d', animation: 'blink 1s infinite' }} /></div>
+                    <div className="post-body">{streamContent}<span className="cursor" /></div>
                   </div>
                 )}
               </div>
@@ -248,7 +249,7 @@ function ThreadDetailPage() {
         </div>
       )}
 
-      <style dangerouslySetInnerHTML={{ __html: '@keyframes blink{0%,50%{opacity:1}51%,100%{opacity:0}}' }} />
+      <style dangerouslySetInnerHTML={{ __html: '.cursor{display:inline-block;width:2px;height:1em;background:#20211d;animation:blink 1s infinite}@keyframes blink{0%,50%{opacity:1}51%,100%{opacity:0}}' }} />
     </div>
   );
 }
