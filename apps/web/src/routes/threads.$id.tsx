@@ -31,7 +31,7 @@ const addComment = createServerFn({ method: 'POST' })
       body: JSON.stringify({
         author_type: 'human',
         author_name: '名無しさん',
-        role: 'comment',
+        role: null,
         body: data.body,
       }),
     });
@@ -51,13 +51,9 @@ function ThreadDetailPage() {
 
   useEffect(() => { setThread(initialThread); }, [initialThread]);
 
-  // 5秒ポーリング（AIレスが非同期で追加されるため）
   useEffect(() => {
     const poll = setInterval(async () => {
-      try {
-        const fresh = await fetchDetail({ data: { id: params.id } });
-        setThread(fresh);
-      } catch {}
+      try { setThread(await fetchDetail({ data: { id: params.id } })); } catch {}
     }, 5000);
     return () => clearInterval(poll);
   }, [params.id]);
@@ -69,12 +65,8 @@ function ThreadDetailPage() {
     try {
       await addComment({ data: { threadId: params.id, body: comment.trim() } });
       setComment('');
-      // 即座にリフレッシュ
-      const fresh = await fetchDetail({ data: { id: params.id } });
-      setThread(fresh);
-    } finally {
-      setSubmitting(false);
-    }
+      setThread(await fetchDetail({ data: { id: params.id } }));
+    } finally { setSubmitting(false); }
   }, [comment, params.id]);
 
   return (
@@ -84,37 +76,29 @@ function ThreadDetailPage() {
       <div className="card" style={{ marginTop: '8px' }}>
         <h2>{thread.title}</h2>
         <p style={{ color: '#666', marginTop: '4px' }}>{thread.body}</p>
-        <span className={`badge badge-${thread.status}`} style={{ marginTop: '8px', display: 'inline-block' }}>
-          {thread.status === 'fixed' ? '✅ 整理完了' : '🔵 議論中'}
-        </span>
       </div>
 
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', margin: '16px 0 8px' }}>
-        <h3>レス一覧</h3>
+        <h3>レス</h3>
         <span style={{ color: '#999', fontSize: '0.8rem' }}>{thread.posts.length}件 · 5秒で自動更新</span>
       </div>
 
       {thread.posts.map((post) => (
-        <div key={post.id} className={`post ${post.author_type === 'ai' ? 'post-ai' : ''}`}>
+        <div key={post.id} className="post">
           <div className="post-header">
-            <strong>#{post.post_number}</strong>{' '}
-            <span className={`badge badge-${post.author_type}`}>
-              {post.author_type === 'ai' ? '🤖 AI' : '👤 人間'}
-            </span>{' '}
-            {post.author_name}
+            <strong>#{post.post_number}</strong> {post.author_name}
           </div>
-          <div style={{ marginTop: '8px', whiteSpace: 'pre-wrap' }}>{post.body}</div>
+          <div style={{ marginTop: '6px', whiteSpace: 'pre-wrap' }}>{post.body}</div>
         </div>
       ))}
 
-      {/* コメントフォーム（継続対話） */}
       <div className="card" style={{ marginTop: '16px' }}>
         <h3 style={{ marginBottom: '8px' }}>💬 レスする（AIも反応するよ）</h3>
         <form onSubmit={handleComment}>
           <textarea
             value={comment}
             onChange={e => setComment(e.target.value)}
-            placeholder="「うちもそう」「なんでそれ続いてるん？」「こうしたらどう？」..."
+            placeholder="「うちもそう」「なんでそれ続いてるん？」..."
             required
             style={{ minHeight: '80px' }}
           />

@@ -52,12 +52,10 @@ async function dispatchAiReplies(
   const repliesWithAnchors = applyAnchors(replies, anchors);
 
   // DBに保存
-  const aiNames = ['名無しさん@AI 1', '名無しさん@AI 2', '名無しさん@AI 3', '名無しさん@AI 4', '名無しさん@AI 5', '名無しさん@AI 6', '名無しさん@AI 7'];
-
   for (let i = 0; i < repliesWithAnchors.length; i++) {
     await addPost(db, threadId, {
       author_type: 'ai',
-      author_name: aiNames[i % aiNames.length],
+      author_name: '名無しさん@AI',
       role: null,
       body: repliesWithAnchors[i],
     });

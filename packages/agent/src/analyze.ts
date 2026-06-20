@@ -1,21 +1,40 @@
 /**
- * ブルシット・ジョブ掲示板 AI返信生成
- * auto-reply-board のプロンプト設計を移植。2ch風住民レス。
+ * ブルシット・ジョブ掲示板 AIレス生成
+ *
+ * 設計根拠: ADR-002 (slug:9afa44d21378)
+ * - recipe.ts方式（原則をLLMに渡して自然に応答）
+ * - auto-reply-board口調（2ch風住民）
+ * - Responder 5パターンは使わない
  */
 
-const SYSTEM_PROMPT = `あなたは2chふう匿名掲示板の住民として、ブルシット・ジョブについて投稿された内容に自然にレスします。
-あなたは相談員でも教師でもなく、助言ではなく反応を返す名無しです。
-返信文だけを指定件数ぴったりの行数で返します。
-JSON、行頭の「1.」「2.」のような箇条書き番号、説明は禁止です。
-各返信は30文字以上90文字以内の一文にし、質問で終わらせません。
+/** ADR-002 原則 + auto-reply-board口調 */
+const SYSTEM_PROMPT = `あなたは2chふう匿名掲示板の住民です。ブルシット・ジョブについて投稿された内容に自然にレスします。
 
-ブルシット・ジョブ掲示板としての特別ルール:
-- 投稿者のモヤモヤに共感しつつ、「なんでそれ続いてるん？」と自然に深掘りする
-- 事実と感情を分ける視点を、掲示板の雑談として自然に混ぜる
-- 同じ経験を持つ住民として「うちはこうだった」的な具体例を混ぜる
-- 説教や正論で締めない。草、ワロタ、わかる、あるある等は自然に使う
-- >>記号は書かない（アプリ側で付ける）
-- 煽りすぎ、人格攻撃、差別表現は禁止`;
+## 原則
+- あなたは判断しない。材料を並べる。選ぶのは本人。
+- 投稿者の言葉をそのまま拾って反応する。言い換えて上書きしない。
+- 「起きてること」と「そう思ってること」を自然に分けて返す。
+- 深掘りする時は1つだけ。なぜそれを聞くか理由を混ぜる。
+- 質問で終わらせない。疑問を投げたら「〜気になるとこやな」「〜な気はする」で締める。
+- 辛辣にしない。同意→疑問→同意かつ深掘り の流れが自然。
+
+## 口調
+- 相談員でも教師でもなく、同じスレにいる名無し。
+- わかる、あるある、草、まじか 等は自然に使う。
+- 説教しない。正論で締めない。大げさな社会論を連発しない。
+- 便利さへの軽い驚き、茶化し、あるある、横レスを優先。
+- >>記号は書かない（アプリ側で付ける）。
+
+## 禁止
+- 診断（「それは認知の歪みです」）
+- 助言（「〇〇すべき」「〇〇しろ」）
+- 辛辣なツッコミ（「お前のせい」「意味ないなら辞めろ」）
+- 「AIです」と名乗ること
+- 中国語や簡体字
+- 行頭の番号、JSON、メタ説明
+
+## 出力形式
+返信文だけを指定件数ぴったりの行数で返す。各返信は一文で、30〜90文字。`;
 
 export function buildReplyPrompt(params: {
   threadTitle: string;
@@ -37,7 +56,7 @@ ${history || '(最初の投稿)'}
 返信対象:
 ${params.targetBody}
 
-返信文だけを ${params.replyCount} 行で返す。番号やJSON禁止。本文のみ。`;
+${params.replyCount} 行で返す。本文のみ。`;
 }
 
 export async function generateReplies(params: {
@@ -70,7 +89,6 @@ export async function generateReplies(params: {
     choices: Array<{ message: { content: string | null; reasoning_content?: string } }>;
   };
 
-  // content が null の場合は reasoning_content を使う（さくらAIのreasoningモデル対応）
   const content = data.choices[0]?.message?.content
     ?? data.choices[0]?.message?.reasoning_content
     ?? '';
@@ -80,23 +98,23 @@ export async function generateReplies(params: {
 
 export function parseReplies(raw: string, count: number): string[] {
   if (!raw) return [];
-  const text = raw.trim();
 
-  // Strategy 1: 思考ノイズ混入時 — "日本語テキスト" を抽出
-  const quoted = [...text.matchAll(/"([^"]*[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]+[^"]*)"/g)]
+  // Strategy 1: 引用符内の日本語テキストを抽出（reasoning output対策）
+  const quoted = [...raw.matchAll(/"([^"]*[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]+[^"]*)"/g)]
     .map(m => m[1].trim())
-    .filter(s => s.length >= 15 && /[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]/.test(s));
+    .filter(s => s.length >= 15)
+    .filter(s => !/\(\d+\)/.test(s));
 
   if (quoted.length >= count) return quoted.slice(0, count);
 
-  // Strategy 2: 純粋な日本語行分割（思考ノイズなし時）
-  const lines = text
+  // Strategy 2: 日本語行分割
+  const lines = raw.trim()
     .split(/\n+/)
     .map((line) => line.replace(/^\s*(?:[-*>]\s*|\d+[.)、:：]\s*)/, '').trim())
     .filter((line) => line.length >= 15)
-    .filter((line) => !/(d+)/.test(line)) // character countノイズ除去
-    .filter((line) => /^[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF>>]/.test(line)) // 日本語or>>で始まる
-    .filter((line) => !/JSON|System|Line\d|Count|Check|Sentence|^We |^Let|^Need/.test(line));
+    .filter((line) => /^[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]/.test(line))
+    .filter((line) => !/JSON|System|Line\d|Count|Check|Sentence|^We |^Let|^Need/.test(line))
+    .filter((line) => !/\(\d+\)/.test(line));
 
   return (lines.length > 0 ? lines : quoted).slice(0, count);
 }
@@ -107,12 +125,14 @@ export function assignAnchors(
   count: number,
 ): (number | null)[] {
   const anchors: (number | null)[] = [];
-  const allNumbers = [...existingPostNumbers];
   for (let i = 0; i < count; i++) {
     const roll = Math.random();
     if (roll < 0.5) anchors.push(targetPostNumber);
-    else if (roll < 0.75 && allNumbers.length > 0) anchors.push(allNumbers[Math.floor(Math.random() * allNumbers.length)]);
-    else anchors.push(null);
+    else if (roll < 0.75 && existingPostNumbers.length > 0) {
+      anchors.push(existingPostNumbers[Math.floor(Math.random() * existingPostNumbers.length)]);
+    } else {
+      anchors.push(null);
+    }
   }
   return anchors;
 }
