@@ -36,6 +36,9 @@ importers:
 
   apps/api:
     dependencies:
+      '@bs-job-board/agent':
+        specifier: workspace:*
+        version: link:../../packages/agent
       '@bs-job-board/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
@@ -98,6 +101,16 @@ importers:
       wrangler:
         specifier: ^4.0.0
         version: 4.103.0(@cloudflare/workers-types@4.20260620.1)
+
+  packages/agent:
+    dependencies:
+      '@bs-job-board/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+    devDependencies:
+      typescript:
+        specifier: ^5.8.0
+        version: 5.9.3
 
   packages/config: {}
 

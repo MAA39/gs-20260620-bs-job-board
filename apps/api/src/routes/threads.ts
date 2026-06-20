@@ -8,10 +8,12 @@ import {
   updateThreadStatus,
   incrementReaction,
 } from '@bs-job-board/db';
+import { generateDeepDiveQuestion, parseAnalysisResponse } from '@bs-job-board/agent';
 
 type Bindings = {
   DB: D1Database;
   AGENT: Fetcher;
+  SAKURA_API_TOKEN: string;
 };
 
 export const threadRoutes = new Hono<{ Bindings: Bindings }>()
@@ -32,13 +34,29 @@ export const threadRoutes = new Hono<{ Bindings: Bindings }>()
     const input = await c.req.json<CreateThreadInput>();
     const { threadId } = await createThread(c.env.DB, input);
 
-    if (c.env.AGENT) {
+    // AI深掘り分析を非同期で実行
+    if (c.env.SAKURA_API_TOKEN) {
       c.executionCtx.waitUntil(
-        c.env.AGENT.fetch(new Request('https://agent/dispatch-analysis', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ threadId, title: input.title, body: input.body }),
-        })).catch((err) => console.error('Agent dispatch failed:', err))
+        (async () => {
+          try {
+            const raw = await generateDeepDiveQuestion(
+              input.title,
+              input.body,
+              c.env.SAKURA_API_TOKEN,
+            );
+            const posts = parseAnalysisResponse(raw);
+            for (const post of posts) {
+              await addPost(c.env.DB, threadId, {
+                author_type: 'ai',
+                author_name: post.authorName,
+                role: post.role as CreatePostInput['role'],
+                body: post.body,
+              });
+            }
+          } catch (err) {
+            console.error('AI analysis failed:', err);
+          }
+        })()
       );
     }
 
