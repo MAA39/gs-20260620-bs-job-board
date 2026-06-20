@@ -19,6 +19,7 @@ export type Post = {
   role: PostRole;
   body: string;
   source_post_number: number | null;
+  user_id: string | null;
   created_at: string;
 };
 
@@ -32,4 +33,5 @@ export type CreatePostInput = {
   role: PostRole;
   body: string;
   source_post_number?: number | null;
+  user_id?: string | null;
 };

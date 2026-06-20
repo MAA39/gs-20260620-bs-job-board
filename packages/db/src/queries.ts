@@ -67,8 +67,8 @@ export async function addPost(
   const postNumber = (lastPost?.max_num ?? 0) + 1;
 
   await db.prepare(
-    'INSERT INTO posts (id, thread_id, post_number, author_type, author_name, role, body, source_post_number) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-  ).bind(postId, threadId, postNumber, input.author_type, input.author_name, input.role, input.body, input.source_post_number ?? null).run();
+    'INSERT INTO posts (id, thread_id, post_number, author_type, author_name, role, body, source_post_number, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+  ).bind(postId, threadId, postNumber, input.author_type, input.author_name, input.role, input.body, input.source_post_number ?? null, input.user_id ?? null).run();
 
   return { postId, postNumber };
 }

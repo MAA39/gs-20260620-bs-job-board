@@ -27,3 +27,23 @@ export function createAuth(d1: D1Database, config: { secret: string; baseURL: st
     ],
   });
 }
+
+/**
+ * リクエストからBetter Authのセッションを取得する
+ * cookieまたはAuthorizationヘッダーからtokenを解決
+ */
+export async function getSessionUser(
+  d1: D1Database,
+  secret: string,
+  baseURL: string,
+  request: Request,
+): Promise<{ id: string; name: string } | null> {
+  try {
+    const auth = createAuth(d1, { secret, baseURL });
+    const session = await auth.api.getSession({ headers: request.headers });
+    if (session?.user) {
+      return { id: session.user.id, name: session.user.name };
+    }
+  } catch {}
+  return null;
+}

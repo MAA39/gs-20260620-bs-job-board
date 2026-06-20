@@ -9,10 +9,12 @@ import {
   toggleReaction,
 } from '@bs-job-board/db';
 import { generateReplies, assignAnchors, applyAnchors } from '@bs-job-board/agent';
+import { getSessionUser } from '../auth.ts';
 
 type Bindings = {
   DB: D1Database;
   SAKURA_API_TOKEN: string;
+  BETTER_AUTH_SECRET: string;
 };
 
 async function dispatchAiReplies(
@@ -102,7 +104,9 @@ export const threadRoutes = new Hono<{ Bindings: Bindings }>()
   .post('/:id/posts', async (c) => {
     const threadId = c.req.param('id');
     const input = await c.req.json<CreatePostInput>();
-    const { postId, postNumber } = await addPost(c.env.DB, threadId, input);
+    const sessionUser = await getSessionUser(c.env.DB, c.env.BETTER_AUTH_SECRET || '', new URL(c.req.url).origin, c.req.raw);
+    const enrichedInput = { ...input, user_id: sessionUser?.id ?? null, author_name: sessionUser?.name && sessionUser.name !== 'Anonymous' ? sessionUser.name : input.author_name };
+    const { postId, postNumber } = await addPost(c.env.DB, threadId, enrichedInput);
 
     if (input.author_type === 'human' && c.env.SAKURA_API_TOKEN) {
       const thread = await c.env.DB.prepare(
