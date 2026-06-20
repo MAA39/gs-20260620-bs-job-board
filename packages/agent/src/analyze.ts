@@ -94,7 +94,9 @@ export async function generateReplies(params: {
   console.log('[AI Think]', thinking.slice(0, 500));
   console.log('[AI Content]', rawContent.slice(0, 500));
 
-  const replies = parseReplies(rawContent || thinking, params.replyCount);
+  // content と reasoning の両方から日本語レスを抽出（どちらに入るか不定）
+  const allText = [rawContent, thinking].filter(Boolean).join('\n');
+  const replies = parseReplies(allText, params.replyCount);
 
   return { replies, thinking, rawContent };
 }
