@@ -1,23 +1,25 @@
 {
-  "$schema": "https://workers.cloudflare.com/schema/wrangler.json",
   "name": "bs-job-board-agent",
+  "main": ".flue-vite/_entry.ts",
   "compatibility_date": "2026-06-01",
   "compatibility_flags": [
     "nodejs_compat"
   ],
-  "observability": {
-    "enabled": true
-  },
-  "migrations": [
+  "no_bundle": true,
+  "rules": [
     {
-      "tag": "v1",
-      "new_sqlite_classes": [
-        "FlueRegistry",
-        "FlueAnalystAgent"
+      "type": "ESModule",
+      "globs": [
+        "**/*.js",
+        "**/*.mjs"
       ]
     }
   ],
-  "main": ".flue-vite/_entry.ts",
+  "find_additional_modules": true,
+  "base_dir": "dist/bs_job_board_agent",
+  "observability": {
+    "enabled": true
+  },
   "durable_objects": {
     "bindings": [
       {
@@ -29,5 +31,15 @@
         "class_name": "FlueRegistry"
       }
     ]
-  }
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "FlueRegistry",
+        "FlueAnalystAgent"
+      ]
+    }
+  ],
+  "$schema": "https://workers.cloudflare.com/schema/wrangler.json"
 }

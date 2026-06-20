@@ -1,16 +1,20 @@
 {
-  "$schema": "https://workers.cloudflare.com/schema/wrangler.json",
   "name": "bs-job-board-agent",
+  "main": "dist/bs_job_board_agent/index.js",
   "compatibility_date": "2026-06-01",
   "compatibility_flags": ["nodejs_compat"],
+  "no_bundle": true,
+  "rules": [{ "type": "ESModule", "globs": ["**/*.js", "**/*.mjs"] }],
+  "find_additional_modules": true,
+  "base_dir": "dist/bs_job_board_agent",
   "observability": { "enabled": true },
+  "durable_objects": {
+    "bindings": [
+      { "name": "FLUE_ANALYST_AGENT", "class_name": "FlueAnalystAgent" },
+      { "name": "FLUE_REGISTRY", "class_name": "FlueRegistry" }
+    ]
+  },
   "migrations": [
-    {
-      "tag": "v1",
-      "new_sqlite_classes": [
-        "FlueRegistry",
-        "FlueAnalystAgent"
-      ]
-    }
+    { "tag": "v1", "new_sqlite_classes": ["FlueRegistry", "FlueAnalystAgent"] }
   ]
 }

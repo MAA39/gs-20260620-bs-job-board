@@ -1,9 +1,8 @@
-import { createAgent } from '@flue/runtime';
+import { createAgent, type AgentRouteHandler } from '@flue/runtime';
 
-/**
- * ブルシット・ジョブ掲示板AIレス生成Agent
- * ADR-002: recipe.ts方式 + auto-reply-board口調
- */
+// HTTP経由でアクセスするために route export が必要
+export const route: AgentRouteHandler = async (_c, next) => next();
+
 export default createAgent(() => ({
   model: 'sakura/gpt-oss-120b',
   instructions: `あなたは2chふう匿名掲示板の住民です。
