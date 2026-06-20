@@ -1,4 +1,5 @@
 import { createFileRoute, Link } from '@tanstack/react-router';
+import { authClient } from '../lib/auth-client';
 import { createServerFn } from '@tanstack/react-start';
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import type { ThreadDetail, Post } from '@bs-job-board/contracts';
@@ -90,10 +91,22 @@ function ThreadDetailPage() {
     } finally { setSubmitting(false); }
   }, [comment, params.id, startAiStream, isAuth]);
 
-  const handleAnonAuth = useCallback(() => {
-    const id = crypto.randomUUID();
-    localStorage.setItem('bs-user-id', id);
-    localStorage.setItem('bs-user-name', '名無しさん');
+  const handleAnonAuth = useCallback(async () => {
+    try {
+      const result = await authClient.signIn.anonymous();
+      if (result.data?.user) {
+        localStorage.setItem('bs-user-id', result.data.user.id);
+        localStorage.setItem('bs-user-name', result.data.user.name || '名無しさん');
+      } else {
+        const id = crypto.randomUUID();
+        localStorage.setItem('bs-user-id', id);
+        localStorage.setItem('bs-user-name', '名無しさん');
+      }
+    } catch {
+      const id = crypto.randomUUID();
+      localStorage.setItem('bs-user-id', id);
+      localStorage.setItem('bs-user-name', '名無しさん');
+    }
     setShowAuthModal(false);
   }, []);
 

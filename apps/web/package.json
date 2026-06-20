@@ -13,6 +13,7 @@
     "@bs-job-board/contracts": "workspace:*",
     "@tanstack/react-router": "^1.120.0",
     "@tanstack/react-start": "^1.120.0",
+    "better-auth": "^1.6.20",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"
   },

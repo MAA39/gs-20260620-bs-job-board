@@ -1,4 +1,5 @@
 import { createFileRoute, Link, useNavigate } from '@tanstack/react-router';
+import { authClient } from '../lib/auth-client';
 import { createServerFn } from '@tanstack/react-start';
 import { useState, useEffect, useCallback } from 'react';
 import type { Thread } from '@bs-job-board/contracts';
@@ -46,7 +47,15 @@ function isAuthenticated(): boolean {
   return !!localStorage.getItem('bs-user-id');
 }
 
-function authenticateAnonymous(): string {
+async function authenticateAnonymous(): Promise<string> {
+  const result = await authClient.signIn.anonymous();
+  if (result.data?.user) {
+    const userId = result.data.user.id;
+    localStorage.setItem('bs-user-id', userId);
+    localStorage.setItem('bs-user-name', result.data.user.name || '名無しさん');
+    return userId;
+  }
+  // フォールバック（API接続失敗時）
   const id = crypto.randomUUID();
   localStorage.setItem('bs-user-id', id);
   localStorage.setItem('bs-user-name', '名無しさん');
@@ -90,7 +99,7 @@ function HomePage() {
   }, [title, body, sort]);
 
   const handleAnonymousAuth = useCallback(async () => {
-    const id = authenticateAnonymous();
+    const id = await authenticateAnonymous();
     setUserId(id);
     setShowAuthModal(false);
     if (pendingAction === 'post' && title.trim() && body.trim()) {
