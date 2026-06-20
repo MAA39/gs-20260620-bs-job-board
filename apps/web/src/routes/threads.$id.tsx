@@ -28,12 +28,18 @@ const addComment = createServerFn({ method: 'POST' })
     await api(`/api/v1/threads/${data.threadId}/posts`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        author_type: 'human',
-        author_name: '名無しさん',
-        role: null,
-        body: data.body,
-      }),
+      body: JSON.stringify({ author_type: 'human', author_name: '名無しさん', role: null, body: data.body }),
+    });
+  });
+
+const fixThread = createServerFn({ method: 'POST' })
+  .validator((input: { threadId: string; status: string }) => input)
+  .handler(async ({ data }) => {
+    const api = await getApi();
+    await api(`/api/v1/threads/${data.threadId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: data.status }),
     });
   });
 
@@ -43,14 +49,13 @@ export const Route = createFileRoute('/threads/$id')({
 });
 
 function ThreadDetailPage() {
-  const initialThread = Route.useLoaderData();
+  const initial = Route.useLoaderData();
   const params = Route.useParams();
-  const [thread, setThread] = useState(initialThread);
+  const [thread, setThread] = useState(initial);
   const [comment, setComment] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
-  useEffect(() => { setThread(initialThread); }, [initialThread]);
-
+  useEffect(() => { setThread(initial); }, [initial]);
   useEffect(() => {
     const poll = setInterval(async () => {
       try { setThread(await fetchDetail({ data: { id: params.id } })); } catch {}
@@ -69,52 +74,64 @@ function ThreadDetailPage() {
     } finally { setSubmitting(false); }
   }, [comment, params.id]);
 
+  const handleFix = useCallback(async () => {
+    const next = thread.status === 'fixed' ? 'open' : 'fixed';
+    await fixThread({ data: { threadId: params.id, status: next } });
+    setThread(await fetchDetail({ data: { id: params.id } }));
+  }, [thread.status, params.id]);
+
+  const aiPosts = thread.posts.filter(p => p.author_type === 'ai' && p.role !== 'thinking');
+  const regularPosts = thread.posts.filter(p => p.role !== 'thinking');
+  const thinkPosts = thread.posts.filter(p => p.role === 'thinking');
+
   return (
     <div>
       <Link to="/" style={{ color: '#666', textDecoration: 'none', fontSize: '0.9rem' }}>← 一覧に戻る</Link>
 
       <div className="card" style={{ marginTop: '8px' }}>
-        <h2>{thread.title}</h2>
-        <p style={{ color: '#666', marginTop: '4px' }}>{thread.body}</p>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+          <h2 style={{ flex: 1 }}>{thread.title}</h2>
+          <button
+            onClick={handleFix}
+            style={{
+              background: thread.status === 'fixed' ? '#e8f5e9' : '#fff3e0',
+              color: thread.status === 'fixed' ? '#2e7d32' : '#e65100',
+              border: `1px solid ${thread.status === 'fixed' ? '#a5d6a7' : '#ffcc80'}`,
+              padding: '4px 12px', fontSize: '0.8rem', marginLeft: '8px', whiteSpace: 'nowrap',
+            }}
+          >
+            {thread.status === 'fixed' ? '✅ 整理完了' : '🔓 議論中'}
+          </button>
+        </div>
+        <p style={{ color: '#666', marginTop: '4px', fontSize: '0.95rem' }}>{thread.body}</p>
       </div>
 
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', margin: '16px 0 8px' }}>
         <h3>レス</h3>
-        <span style={{ color: '#999', fontSize: '0.8rem' }}>{thread.posts.length}件 · 5秒で自動更新</span>
+        <span style={{ color: '#999', fontSize: '0.8rem' }}>{regularPosts.length}件 · 5秒で自動更新</span>
       </div>
 
-      {thread.posts.map((post) => {
-        if (post.role === 'thinking') {
-          return (
-            <details key={post.id} className="post" style={{ fontSize: '0.8rem', color: '#888', borderLeftColor: '#eee', cursor: 'pointer' }}>
-              <summary style={{ padding: '8px 0' }}>🤔 AIの思考過程（タップで展開）</summary>
-              <div style={{ marginTop: '6px', whiteSpace: 'pre-wrap' }}>{post.body}</div>
-            </details>
-          );
-        }
-        return (
-          <div key={post.id} className="post">
-            <div className="post-header">
-              <strong>#{post.post_number}</strong> {post.author_name}
-            </div>
-            <div style={{ marginTop: '6px', whiteSpace: 'pre-wrap' }}>{post.body}</div>
+      {regularPosts.map((post) => (
+        <div key={post.id} className="post">
+          <div className="post-header">
+            <strong>#{post.post_number}</strong> {post.author_name}
           </div>
-        );
-      })}
+          <div style={{ marginTop: '6px', whiteSpace: 'pre-wrap' }}>{post.body}</div>
+        </div>
+      ))}
+
+      {thinkPosts.map((post) => (
+        <details key={post.id} className="post" style={{ fontSize: '0.8rem', color: '#888', borderLeftColor: '#eee', cursor: 'pointer' }}>
+          <summary style={{ padding: '8px 0' }}>🤔 AIの思考過程（タップで展開）</summary>
+          <div style={{ marginTop: '6px', whiteSpace: 'pre-wrap' }}>{post.body}</div>
+        </details>
+      ))}
 
       <div className="card" style={{ marginTop: '16px' }}>
         <h3 style={{ marginBottom: '8px' }}>💬 レスする（AIも反応するよ）</h3>
         <form onSubmit={handleComment}>
-          <textarea
-            value={comment}
-            onChange={e => setComment(e.target.value)}
-            placeholder="「うちもそう」「なんでそれ続いてるん？」..."
-            required
-            style={{ minHeight: '80px' }}
-          />
-          <button type="submit" disabled={submitting}>
-            {submitting ? '投稿中...' : 'レスする'}
-          </button>
+          <textarea value={comment} onChange={e => setComment(e.target.value)} placeholder="「うちもそう」「なんでそれ続いてるん？」..." required style={{ minHeight: '80px' }} />
+          <button type="submit" disabled={submitting}>{submitting ? '投稿中...' : 'レスする'}</button>
         </form>
       </div>
     </div>
