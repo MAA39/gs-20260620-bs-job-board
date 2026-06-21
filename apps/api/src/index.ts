@@ -7,6 +7,7 @@ type Bindings = {
   DB: D1Database;
   SAKURA_API_TOKEN: string;
   BETTER_AUTH_SECRET: string;
+  AGENT: { fetch: typeof fetch };
 };
 
 const app = new Hono<{ Bindings: Bindings }>();
@@ -18,6 +19,7 @@ app.use('*', cors({
 }));
 app.get('/health', (c) => c.json({ status: 'ok' }));
 app.route('/api/v1/threads', threadRoutes);
+
 
 // Better Auth handler
 app.on(['POST', 'GET'], '/api/auth/**', async (c) => {
