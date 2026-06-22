@@ -20,6 +20,13 @@
   "observability": {
     "enabled": true
   },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "bs-job-board-db",
+      "database_id": "f64026c1-f6b4-4739-943a-dd7cd57918f7"
+    }
+  ],
   "durable_objects": {
     "bindings": [
       {
