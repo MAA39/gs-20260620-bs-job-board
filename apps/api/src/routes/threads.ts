@@ -8,66 +8,38 @@ import {
   updateThreadStatus,
   toggleReaction,
 } from '@bs-job-board/db';
-import { generateReplies, assignAnchors, applyAnchors } from '@bs-job-board/agent';
 import { getSessionUser } from '../auth.ts';
 
 type Bindings = {
   DB: D1Database;
   SAKURA_API_TOKEN: string;
   BETTER_AUTH_SECRET: string;
+  AGENT: { fetch: typeof fetch };
 };
 
+/**
+ * AI レス生成を Flue workflow 経由で非同期実行。
+ * Service Binding → POST /workflows/generate-replies
+ * workflow 側で D1 取得 → messages 構築 → さくら AI → DB 保存まで完結。
+ */
 async function dispatchAiReplies(
-  db: D1Database,
-  sakuraToken: string,
+  agent: { fetch: typeof fetch },
   threadId: string,
   threadTitle: string,
   targetBody: string,
   targetPostNumber: number,
 ) {
-  const existingPosts = await db.prepare(
-    'SELECT post_number, author_name, body, author_type FROM posts WHERE thread_id = ? ORDER BY post_number ASC'
-  ).bind(threadId).all<{ post_number: number; author_name: string; body: string; author_type: string }>();
+  const workflowResponse = await agent.fetch(
+    new Request('http://agent/workflows/generate-replies', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ threadId, threadTitle, targetBody, targetPostNumber }),
+    }),
+  );
 
-  const recentPosts = existingPosts.results.map((p) => ({
-    number: p.post_number,
-    authorName: p.author_name,
-    body: p.body,
-    authorType: p.author_type,
-  }));
-
-  const replyCount = 3 + Math.floor(Math.random() * 4); // 3〜6件
-
-  const result = await generateReplies({
-    threadTitle,
-    targetBody,
-    recentPosts,
-    replyCount,
-    sakuraApiToken: sakuraToken,
-  });
-
-  // アンカー割り当て + レス保存
-  const existingNumbers = recentPosts.map((p) => p.number);
-  const anchors = assignAnchors(targetPostNumber, existingNumbers, result.replies.length);
-  const repliesWithAnchors = applyAnchors(result.replies, anchors);
-
-  for (const reply of repliesWithAnchors) {
-    await addPost(db, threadId, {
-      author_type: 'ai',
-      author_name: '名無しさん@AI',
-      role: null,
-      body: reply,
-    });
-  }
-
-  // Thinkingを最後のpostとして保存（思考過程の可視化）
-  if (result.thinking) {
-    await addPost(db, threadId, {
-      author_type: 'ai',
-      author_name: '🤔 AIの思考',
-      role: 'thinking',
-      body: result.thinking,
-    });
+  if (!workflowResponse.ok) {
+    const errorText = await workflowResponse.text();
+    throw new Error(`Workflow dispatch failed: ${workflowResponse.status} ${errorText}`);
   }
 }
 
@@ -92,8 +64,7 @@ export const threadRoutes = new Hono<{ Bindings: Bindings }>()
     if (c.env.SAKURA_API_TOKEN) {
       c.executionCtx.waitUntil(
         dispatchAiReplies(
-          c.env.DB, c.env.SAKURA_API_TOKEN,
-          threadId, input.title, input.body, 1,
+          c.env.AGENT, threadId, input.title, input.body, 1,
         ).catch((err) => console.error('AI reply failed:', err))
       );
     }
@@ -116,8 +87,7 @@ export const threadRoutes = new Hono<{ Bindings: Bindings }>()
       if (thread) {
         c.executionCtx.waitUntil(
           dispatchAiReplies(
-            c.env.DB, c.env.SAKURA_API_TOKEN,
-            threadId, thread.title, input.body, postNumber,
+            c.env.AGENT, threadId, thread.title, input.body, postNumber,
           ).catch((err) => console.error('AI reply failed:', err))
         );
       }

@@ -27,6 +27,9 @@ importers:
         specifier: ^4.12.0
         version: 4.12.26
     devDependencies:
+      '@cloudflare/workers-types':
+        specifier: ^4.20250620.0
+        version: 4.20260620.1
       '@flue/cli':
         specifier: ^1.0.0-beta.1
         version: 1.0.0-beta.1(@cfworker/json-schema@4.1.1)(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(@types/node@26.0.0)(esbuild@0.28.1)(jiti@2.7.0)(typebox@1.1.38)(typescript@5.9.3)(wrangler@4.103.0(@cloudflare/workers-types@4.20260620.1))(ws@8.21.0)(yaml@2.9.0)(zod-to-json-schema@3.25.2(zod@4.4.3))(zod@4.4.3)
