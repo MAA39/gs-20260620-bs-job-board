@@ -3,7 +3,6 @@ import {
   registerProvider,
   type FlueContext,
   type WorkflowRouteHandler,
-  type WorkflowRunsHandler,
 } from '@flue/runtime';
 
 const PROVIDER_ID = 'sakura-ai';
@@ -60,7 +59,6 @@ const replyAgent = createAgent<unknown, Env>(({ env }) => ({
 }));
 
 export const route: WorkflowRouteHandler = async (_context, next) => next();
-export const runs: WorkflowRunsHandler = async (_context, next) => next();
 
 export async function run({ payload, env, init }: FlueContext<unknown, Env>): Promise<RunResult> {
   try {
@@ -253,7 +251,10 @@ function toSafeErrorCode(error: unknown): string {
   if (error instanceof DOMException && error.name === 'TimeoutError') {
     return 'AI_PROVIDER_TIMEOUT';
   }
-  if (error instanceof Error && (error.name === 'AbortError' || /timeout/iu.test(error.name))) {
+  if (
+    error instanceof Error &&
+    (error.name === 'AbortError' || /timeout/iu.test(error.name) || /timeout/iu.test(error.message))
+  ) {
     return 'AI_PROVIDER_TIMEOUT';
   }
   return 'AI_RUN_FAILED';
