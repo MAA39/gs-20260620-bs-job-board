@@ -38,6 +38,17 @@ async function dispatchAiReplies(
   }
 }
 
+function logDispatchFailure(error: unknown): void {
+  if (error instanceof Error) {
+    console.error('AI workflow dispatch failed', {
+      name: error.name,
+      message: error.message,
+    });
+    return;
+  }
+  console.error('AI workflow dispatch failed', { name: 'UnknownError' });
+}
+
 export const threadRoutes = new Hono<{ Bindings: Bindings }>()
   .get('/', async (context) => {
     const sort = (context.req.query('sort') ?? 'new') as 'new' | 'hot';
@@ -53,7 +64,7 @@ export const threadRoutes = new Hono<{ Bindings: Bindings }>()
     const { threadId } = await createThread(context.env.DB, input);
     context.executionCtx.waitUntil(
       dispatchAiReplies(context.env.AGENT, threadId, input.title, input.body, 1)
-        .catch(() => console.error('AI workflow dispatch failed')),
+        .catch(logDispatchFailure),
     );
     return context.json({ id: threadId, title: input.title }, 201);
   })
@@ -89,7 +100,7 @@ export const threadRoutes = new Hono<{ Bindings: Bindings }>()
             thread.title,
             input.body,
             postNumber,
-          ).catch(() => console.error('AI workflow dispatch failed')),
+          ).catch(logDispatchFailure),
         );
       }
     }
