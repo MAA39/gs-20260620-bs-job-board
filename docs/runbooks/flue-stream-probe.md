@@ -7,9 +7,9 @@
 ## 事前準備
 
 - `apps/agent/.dev.vars.example`を参考に、ローカル専用設定を作る
-- 共有値は安全な入力方法でshell環境へ設定する
 - 実値をGit、Issue、PR、logへ記録しない
 - D1に存在するthread IDを検証payloadへ指定する
+- probeはlocalhost経由でのみ実行する
 
 ## 実行
 
@@ -31,7 +31,7 @@ pnpm probe:flue-stream -- \
 
 ## 主なエラー
 
-- admission 404: workflow routeと内部認証設定を確認する
-- stream 404: `runs` middleware、run ID、同じ認証headerを確認する
+- admission 404: workflow routeとlocalhostのURLを確認する
+- stream 404: `runs` middlewareとadmissionで返ったrun IDを確認する
 - provider timeout: 無条件retryせず、provider状態と入力サイズを確認する
 - invalid output: promptとschemaを見直し、repair回数は増やさない
