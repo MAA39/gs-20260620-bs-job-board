@@ -23,7 +23,7 @@ function RootShell({ children }: { children: React.ReactNode }) {
         <header>
           <div className="container">
             <p className="eyebrow">BS Job Board</p>
-            <h1><Link to="/" style={{ color: '#20211d', textDecoration: 'none' }}>ブルシット・ジョブ解体掲示板</Link></h1>
+            <h1><Link to="/" search={{ sort: 'new' }} style={{ color: '#20211d', textDecoration: 'none' }}>ブルシット・ジョブ解体掲示板</Link></h1>
           </div>
         </header>
         <main className="container">{children}</main>

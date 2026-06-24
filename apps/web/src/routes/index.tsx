@@ -8,7 +8,7 @@ type ThreadWithReactions = Thread & { reaction_count: number };
 
 async function getApi() {
   try {
-    const { env } = (await import('cloudflare:workers')) as { env: { API: { fetch: typeof fetch } } };
+    const { env } = (await import('cloudflare:workers')) as unknown as { env: { API: { fetch: typeof fetch } } };
     return (url: string, init?: RequestInit) => env.API.fetch(`https://api${url}`, init);
   } catch {
     return (url: string, init?: RequestInit) => fetch(`http://localhost:8787${url}`, init);
@@ -145,8 +145,8 @@ function HomePage() {
       <div className="section-header">
         <span>Threads</span>
         <div style={{ display: 'flex', gap: '6px' }}>
-          <button onClick={() => navigate({ search: { sort: 'hot' } })} className="badge" style={{ background: sort === 'hot' ? '#f0b429' : '#fff', cursor: 'pointer', border: '1px solid #20211d' }}>🔥 わかる！順</button>
-          <button onClick={() => navigate({ search: { sort: 'new' } })} className="badge" style={{ background: sort === 'new' ? '#f0b429' : '#fff', cursor: 'pointer', border: '1px solid #20211d' }}>🆕 新着順</button>
+          <button onClick={() => navigate({ to: '/', search: { sort: 'hot' } })} className="badge" style={{ background: sort === 'hot' ? '#f0b429' : '#fff', cursor: 'pointer', border: '1px solid #20211d' }}>🔥 わかる！順</button>
+          <button onClick={() => navigate({ to: '/', search: { sort: 'new' } })} className="badge" style={{ background: sort === 'new' ? '#f0b429' : '#fff', cursor: 'pointer', border: '1px solid #20211d' }}>🆕 新着順</button>
         </div>
       </div>
 

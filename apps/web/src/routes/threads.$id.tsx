@@ -8,7 +8,7 @@ const API_URL = 'https://bs-job-board-api.masa-nekoshinshi39.workers.dev';
 
 async function getApi() {
   try {
-    const { env } = (await import('cloudflare:workers')) as { env: { API: { fetch: typeof fetch } } };
+    const { env } = (await import('cloudflare:workers')) as unknown as { env: { API: { fetch: typeof fetch } } };
     return (url: string, init?: RequestInit) => env.API.fetch(`https://api${url}`, init);
   } catch {
     return (url: string, init?: RequestInit) => fetch(`http://localhost:8787${url}`, init);
@@ -182,7 +182,7 @@ function ThreadDetailPage() {
 
   return (
     <div>
-      <Link to="/" style={{ color: '#555041', textDecoration: 'none', fontSize: '0.9rem' }}>← 一覧に戻る</Link>
+      <Link to="/" search={{ sort: 'new' }} style={{ color: '#555041', textDecoration: 'none', fontSize: '0.9rem' }}>← 一覧に戻る</Link>
 
       <div className="card" style={{ marginTop: '8px' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
