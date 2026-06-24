@@ -28,3 +28,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
       - run: pnpm build
+      - run: node --check scripts/probe-flue-stream.mjs
+      - name: AI route guards
+        run: |
+          test -z "$(grep -R 'api.ai.sakura.ad.jp/v1/chat/completions' apps/api apps/agent/src/workflows --include='*.ts' || true)"
+          test -z "$(grep -R 'reasoning_content' apps/api apps/agent/src/workflows --include='*.ts' || true)"
