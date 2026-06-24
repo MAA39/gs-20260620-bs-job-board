@@ -1,44 +1,21 @@
-/**
- * ブルシット・ジョブ掲示板 — AI レス生成 workflow
- *
- * パターンB: Flue workflow 内でさくら AI を直接呼び出す。
- * messages 配列を user/assistant 交互に構築し、正式マルチターンで送信。
- * ADR-002 (slug:9afa44d21378) + 改修方針 (slug:c4130054bd66) 準拠。
- */
+import {
+  createAgent,
+  registerProvider,
+  type FlueContext,
+  type WorkflowRouteHandler,
+} from '@flue/runtime';
 
-import type { FlueContext, WorkflowRouteHandler } from '@flue/runtime';
+const PROVIDER_ID = 'sakura-ai';
+const DEFAULT_MODEL_ID = 'gpt-oss-120b';
+const DEFAULT_BASE_URL = 'https://api.ai.sakura.ad.jp/v1';
+const REPLY_COUNT = 3;
+const TIMEOUT_MS = 45_000;
+const LEGACY_THINKING_AUTHOR = '🤔 AIの思考';
 
-// HTTP 公開（ゲートキーパー）
-export const route: WorkflowRouteHandler = async (_c, next) => next();
-
-// ---- 定数 ----------------------------------------------------------------
-
-const SYSTEM_PROMPT = `あなたは2chふう匿名掲示板の住民です。ブルシット・ジョブについて投稿された内容に自然にレスします。
-
-## 原則
-- あなたは判断しない。材料を並べる。選ぶのは本人。
-- 投稿者の言葉をそのまま拾って反応する。言い換えて上書きしない。
-- 「起きてること」と「そう思ってること」を自然に分けて返す。
-- 深掘りする時は1つだけ。なぜそれを聞くか理由を混ぜる。
-- 質問で終わらせない。疑問を投げたら「〜気になるとこやな」「〜な気はする」で締める。
-- 辛辣にしない。同意→疑問→同意かつ深掘り の流れが自然。
-
-## 口調
-- 相談員でも教師でもなく、同じスレにいる名無し。
-- わかる、あるある、草、まじか 等は自然に使う。
-- 説教しない。正論で締めない。
-- >>記号は書かない（アプリ側で付ける）。
-
-## 禁止
-- 診断・助言・辛辣なツッコミ
-- 「AIです」と名乗る
-
-## 出力形式（厳守）
-必ず以下のJSON形式だけを出力する。前置きや説明は一切不要。
-{"replies": ["レス1", "レス2", ...]}
-指定件数ぴったり返す。`;
-
-// ---- 型 ------------------------------------------------------------------
+const SYSTEM_PROMPT = `2chふう匿名掲示板の住民として返答する。
+判断や説教をせず、投稿者の言葉を拾って材料を並べる。
+深掘り質問は全体で最大1つ。AIを名乗らず、>>記号も書かない。
+必ずJSONオブジェクトだけを返す: {"replies":["レス1","レス2","レス3"]}`;
 
 type Payload = {
   threadId: string;
@@ -49,7 +26,9 @@ type Payload = {
 
 type Env = {
   DB: D1Database;
-  SAKURA_API_TOKEN: string;
+  SAKURA_API_TOKEN?: string;
+  SAKURA_BASE_URL?: string;
+  SAKURA_MODEL_ID?: string;
 };
 
 type DbPost = {
@@ -59,224 +38,243 @@ type DbPost = {
   author_type: string;
 };
 
-type Message = { role: 'system' | 'user' | 'assistant'; content: string };
+type ReplyBundle = { replies: string[] };
 
-type SakuraResponse = {
-  choices: Array<{
-    message: { content: string | null; reasoning_content?: string };
-    finish_reason: string;
-  }>;
+type RunResult = {
+  repliesCount: number;
+  model: { provider: string; id: string };
+  usage: { input: number; output: number };
 };
 
-// ---- メイン ---------------------------------------------------------------
-
-export async function run({ payload, env }: FlueContext<Payload, Env>) {
-  const { threadId, threadTitle, targetBody, targetPostNumber } = payload;
-
-  const posts = await fetchThreadPosts(env.DB, threadId);
-  const replyCount = 3 + Math.floor(Math.random() * 4); // 3〜6件
-  const messages = buildMultiTurnMessages(posts, targetBody, replyCount);
-
-  const sakura = await callSakuraCompletion(messages, env.SAKURA_API_TOKEN, {
-    maxTokens: 1500,
-    temperature: 0.7,
-  });
-
-  const replies = parseJsonReplies(sakura.content, replyCount);
-  const existingNumbers = posts.map((p) => p.post_number);
-  const anchors = assignRandomAnchors(targetPostNumber, existingNumbers, replies.length);
-  const anchored = applyAnchorsToReplies(replies, anchors);
-
-  await saveAiReplies(env.DB, threadId, anchored, sakura.thinking);
-
-  return { repliesCount: anchored.length, thinking: sakura.thinking.slice(0, 100) };
+class SafeWorkflowError extends Error {
+  constructor(readonly code: string) {
+    super(code);
+    this.name = 'SafeWorkflowError';
+  }
 }
 
-// ---- D1 操作 --------------------------------------------------------------
+const replyAgent = createAgent<unknown, Env>(({ env }) => ({
+  model: `${PROVIDER_ID}/${env.SAKURA_MODEL_ID?.trim() || DEFAULT_MODEL_ID}`,
+  thinkingLevel: 'minimal',
+  instructions: 'Return only the requested JSON object and follow the supplied constraints.',
+}));
 
-/** D1 からスレッドの全投稿を取得（post_number 昇順） */
-async function fetchThreadPosts(db: D1Database, threadId: string): Promise<DbPost[]> {
+export const route: WorkflowRouteHandler = async (_context, next) => next();
+
+export async function run({ payload, env, init }: FlueContext<unknown, Env>): Promise<RunResult> {
+  try {
+    const input = parsePayload(payload);
+    const modelId = registerSakura(env);
+    const posts = await fetchPosts(env.DB, input.threadId);
+    const harness = await init(replyAgent);
+    const session = await harness.session();
+
+    let response = await session.prompt(buildPrompt(posts, input), {
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+      thinkingLevel: 'minimal',
+    });
+    let decoded = decodeReplies(response.text);
+
+    if (!decoded.ok) {
+      response = await session.prompt(buildRepairPrompt(decoded.issues, response.text), {
+        signal: AbortSignal.timeout(TIMEOUT_MS),
+        thinkingLevel: 'minimal',
+      });
+      decoded = decodeReplies(response.text);
+    }
+
+    if (!decoded.ok) throw new SafeWorkflowError('AI_OUTPUT_INVALID');
+
+    await insertReplyBatch(
+      env.DB,
+      input.threadId,
+      input.targetPostNumber,
+      decoded.value.replies,
+    );
+
+    return {
+      repliesCount: decoded.value.replies.length,
+      model: {
+        provider: response.model?.provider || PROVIDER_ID,
+        id: response.model?.id || modelId,
+      },
+      usage: {
+        input: nonNegative(response.usage?.input),
+        output: nonNegative(response.usage?.output),
+      },
+    };
+  } catch (error) {
+    throw new SafeWorkflowError(toSafeErrorCode(error));
+  }
+}
+
+function registerSakura(env: Env): string {
+  const apiKey = env.SAKURA_API_TOKEN?.trim();
+  if (!apiKey) throw new SafeWorkflowError('AI_CONFIGURATION_ERROR');
+
+  const modelId = env.SAKURA_MODEL_ID?.trim() || DEFAULT_MODEL_ID;
+  const baseUrl = (env.SAKURA_BASE_URL?.trim() || DEFAULT_BASE_URL)
+    .replace(/\/chat\/completions\/?$/u, '')
+    .replace(/\/$/u, '');
+
+  registerProvider(PROVIDER_ID, {
+    api: 'openai-completions',
+    baseUrl,
+    apiKey,
+    models: { [modelId]: { contextWindow: 0, maxTokens: 1_500 } },
+  });
+  return modelId;
+}
+
+function parsePayload(value: unknown): Payload {
+  if (!isRecord(value)) throw new SafeWorkflowError('AI_INPUT_INVALID');
+  const threadId = text(value.threadId);
+  const threadTitle = text(value.threadTitle);
+  const targetBody = text(value.targetBody);
+  const targetPostNumber = value.targetPostNumber;
+  if (
+    !threadId ||
+    !threadTitle ||
+    !targetBody ||
+    typeof targetPostNumber !== 'number' ||
+    !Number.isSafeInteger(targetPostNumber) ||
+    targetPostNumber < 1
+  ) {
+    throw new SafeWorkflowError('AI_INPUT_INVALID');
+  }
+  return { threadId, threadTitle, targetBody, targetPostNumber };
+}
+
+function buildPrompt(posts: DbPost[], input: Payload): string {
+  const history = posts
+    .map((post) => `${post.post_number}. ${post.author_name}: ${post.body}`)
+    .join('\n');
+
+  return [
+    SYSTEM_PROMPT,
+    `スレッド名: ${input.threadTitle}`,
+    history || '(最初の投稿)',
+    `返信対象: ${input.targetBody}`,
+    `返信を${REPLY_COUNT}件返す。`,
+  ].join('\n\n');
+}
+
+function buildRepairPrompt(issues: string[], output: string): string {
+  return [
+    '直前のJSONを契約に合わせて修正する。説明は書かない。',
+    `問題: ${issues.join('; ')}`,
+    '{"replies":["レス1","レス2","レス3"]}',
+    output,
+  ].join('\n\n');
+}
+
+function decodeReplies(textValue: string):
+  | { ok: true; value: ReplyBundle }
+  | { ok: false; issues: string[] } {
+  let value: unknown;
+  try {
+    value = parseJson(textValue);
+  } catch {
+    return { ok: false, issues: ['valid JSON required'] };
+  }
+  if (!isRecord(value) || !Array.isArray(value.replies)) {
+    return { ok: false, issues: ['replies array required'] };
+  }
+
+  const issues: string[] = [];
+  if (value.replies.length !== REPLY_COUNT) issues.push(`expected ${REPLY_COUNT} replies`);
+  const replies = value.replies
+    .filter((reply): reply is string => typeof reply === 'string')
+    .map((reply) => reply.trim());
+  if (replies.length !== value.replies.length) issues.push('all replies must be strings');
+  if (replies.some((reply) => reply.length < 5 || reply.length > 200)) {
+    issues.push('reply length must be 5-200');
+  }
+  if (new Set(replies).size !== replies.length) issues.push('replies must be unique');
+  const questionMarks = replies.reduce(
+    (count, reply) => count + (reply.match(/[?？]/gu)?.length ?? 0),
+    0,
+  );
+  if (questionMarks > 1) issues.push('at most one question is allowed');
+  if (issues.length > 0) return { ok: false, issues };
+  return { ok: true, value: { replies } };
+}
+
+function parseJson(value: string): unknown {
+  return JSON.parse(value.trim());
+}
+
+async function fetchPosts(db: D1Database, threadId: string): Promise<DbPost[]> {
   const result = await db
     .prepare(
-      'SELECT post_number, author_name, body, author_type FROM posts WHERE thread_id = ? ORDER BY post_number ASC',
+      'SELECT post_number, author_name, body, author_type FROM posts WHERE thread_id = ? AND author_name != ? ORDER BY post_number DESC LIMIT 8',
     )
-    .bind(threadId)
+    .bind(threadId, LEGACY_THINKING_AUTHOR)
     .all<DbPost>();
-  return result.results;
+  return result.results.reverse();
 }
 
-/** 生成された AI レスと thinking を D1 に保存（リトライ付き） */
-async function saveAiReplies(
+async function insertReplyBatch(
   db: D1Database,
   threadId: string,
+  sourcePostNumber: number,
   replies: string[],
-  thinking: string,
 ): Promise<void> {
-  for (const reply of replies) {
-    await insertPost(db, threadId, 'ai', '名無しさん@AI', null, reply);
-  }
-  if (thinking) {
-    await insertPost(db, threadId, 'ai', '🤔 AIの思考', 'thinking', thinking);
-  }
-}
-
-/** post_number の UNIQUE 制約に対応したリトライ付き INSERT */
-async function insertPost(
-  db: D1Database,
-  threadId: string,
-  authorType: string,
-  authorName: string,
-  role: string | null,
-  body: string,
-): Promise<{ postId: string; postNumber: number }> {
   for (let attempt = 0; attempt < 5; attempt++) {
-    const postId = crypto.randomUUID();
-    const max = await db
-      .prepare('SELECT MAX(post_number) as max_num FROM posts WHERE thread_id = ?')
+    const row = await db
+      .prepare('SELECT MAX(post_number) AS max_num FROM posts WHERE thread_id = ?')
       .bind(threadId)
       .first<{ max_num: number | null }>();
-    const postNumber = (max?.max_num ?? 0) + 1;
+    const firstPostNumber = (row?.max_num ?? 0) + 1;
+    const statements = replies.map((body, index) =>
+      db
+        .prepare(`INSERT INTO posts
+          (id, thread_id, post_number, author_type, author_name, role, body, source_post_number, user_id)
+          VALUES (?, ?, ?, 'ai', '名無しさん', NULL, ?, ?, NULL)`)
+        .bind(
+          crypto.randomUUID(),
+          threadId,
+          firstPostNumber + index,
+          body,
+          sourcePostNumber,
+        ),
+    );
 
     try {
-      await db
-        .prepare(
-          `INSERT INTO posts (id, thread_id, post_number, author_type, author_name, role, body, source_post_number, user_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL)`,
-        )
-        .bind(postId, threadId, postNumber, authorType, authorName, role, body)
-        .run();
-      return { postId, postNumber };
-    } catch (err) {
-      if (attempt === 4) throw err;
+      await db.batch(statements);
+      return;
+    } catch (error) {
+      const conflict = error instanceof Error &&
+        /UNIQUE constraint failed: posts\.thread_id, posts\.post_number/iu.test(error.message);
+      if (!conflict || attempt === 4) throw error;
     }
   }
-  throw new Error('Failed to assign post_number after 5 retries');
 }
 
-// ---- messages 構築 --------------------------------------------------------
-
-/**
- * 投稿履歴を正式マルチターンの messages 配列に変換。
- * author_type: 'human' → role: 'user'
- * author_type: 'ai'    → role: 'assistant'
- * 直近 8 件を使用。最後に返信指示を付与。
- */
-function buildMultiTurnMessages(
-  posts: DbPost[],
-  targetBody: string,
-  replyCount: number,
-): Message[] {
-  const messages: Message[] = [{ role: 'system', content: SYSTEM_PROMPT }];
-
-  // 直近 8 件を user/assistant に変換
-  for (const post of posts.slice(-8)) {
-    // thinking ロールは会話に含めない
-    if (post.author_type === 'ai' && post.author_name === '🤔 AIの思考') continue;
-
-    messages.push({
-      role: post.author_type === 'human' ? 'user' : 'assistant',
-      content: post.body,
-    });
+function toSafeErrorCode(error: unknown): string {
+  if (error instanceof SafeWorkflowError) return error.code;
+  if (error instanceof DOMException && error.name === 'TimeoutError') {
+    return 'AI_PROVIDER_TIMEOUT';
   }
-
-  // messages が system だけ or 最後が assistant → 返信対象を user として追加
-  const lastRole = messages[messages.length - 1].role;
-  if (lastRole === 'assistant' || lastRole === 'system') {
-    messages.push({ role: 'user', content: targetBody });
+  if (
+    error instanceof Error &&
+    (error.name === 'AbortError' || /timeout/iu.test(error.name) || /timeout/iu.test(error.message))
+  ) {
+    return 'AI_PROVIDER_TIMEOUT';
   }
-
-  // 最後の user メッセージに件数指示を追記
-  const lastMsg = messages[messages.length - 1];
-  lastMsg.content += `\n\n返信${replyCount}件をJSON形式で。`;
-
-  return messages;
+  return 'AI_RUN_FAILED';
 }
 
-// ---- さくら AI 呼び出し ---------------------------------------------------
-
-/** さくら AI Engine にマルチターン messages を送信して応答を取得 */
-async function callSakuraCompletion(
-  messages: Message[],
-  apiToken: string,
-  config: { maxTokens: number; temperature: number },
-): Promise<{ content: string; thinking: string }> {
-  const response = await fetch('https://api.ai.sakura.ad.jp/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiToken}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: 'gpt-oss-120b',
-      response_format: { type: 'json_object' },
-      messages,
-      max_tokens: config.maxTokens,
-      temperature: config.temperature,
-    }),
-  });
-
-  if (!response.ok) {
-    throw new Error(`Sakura AI error: ${response.status} ${await response.text()}`);
-  }
-
-  const data = (await response.json()) as SakuraResponse;
-  return {
-    content: data.choices[0]?.message?.content ?? '',
-    thinking: data.choices[0]?.message?.reasoning_content ?? '',
-  };
+function nonNegative(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+    ? Math.trunc(value)
+    : 0;
 }
 
-// ---- パース・アンカー -----------------------------------------------------
-
-/** AI 応答の JSON から replies 配列をパース */
-function parseJsonReplies(raw: string, count: number): string[] {
-  if (!raw) return [];
-  try {
-    const cleaned = raw.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-    const parsed = JSON.parse(cleaned);
-    if (Array.isArray(parsed?.replies)) {
-      return parsed.replies
-        .map((r: unknown) => String(r).trim())
-        .filter((r: string) => r.length >= 5)
-        .slice(0, count);
-    }
-  } catch {
-    /* JSON 失敗時はフォールバック */
-  }
-  return parseLineReplies(raw, count);
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-/** フォールバック: 行分割でレスを抽出 */
-function parseLineReplies(raw: string, count: number): string[] {
-  return raw
-    .trim()
-    .split(/\n+/)
-    .map((line) => line.replace(/^\s*(?:[-*>]\s*|\d+[.)、:：]\s*)/, '').trim())
-    .filter((line) => line.length >= 15)
-    .filter((line) => /^[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]/.test(line))
-    .slice(0, count);
-}
-
-/** レスにランダムでアンカー（>>N）を割り当て */
-function assignRandomAnchors(
-  targetPostNumber: number,
-  existingPostNumbers: number[],
-  count: number,
-): (number | null)[] {
-  return Array.from({ length: count }, () => {
-    const roll = Math.random();
-    if (roll < 0.5) return targetPostNumber;
-    if (roll < 0.75 && existingPostNumbers.length > 0) {
-      return existingPostNumbers[Math.floor(Math.random() * existingPostNumbers.length)];
-    }
-    return null;
-  });
-}
-
-/** アンカーをレス本文の先頭に付加 */
-function applyAnchorsToReplies(replies: string[], anchors: (number | null)[]): string[] {
-  return replies.map((reply, i) => {
-    const anchor = anchors[i];
-    return anchor != null ? `>>${anchor} ${reply}` : reply;
-  });
+function text(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
