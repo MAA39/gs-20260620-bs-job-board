@@ -10,6 +10,7 @@ const DEFAULT_MODEL_ID = 'gpt-oss-120b';
 const DEFAULT_BASE_URL = 'https://api.ai.sakura.ad.jp/v1';
 const REPLY_COUNT = 3;
 const TIMEOUT_MS = 45_000;
+const LEGACY_THINKING_AUTHOR = '🤔 AIの思考';
 
 const SYSTEM_PROMPT = `2chふう匿名掲示板の住民として返答する。
 判断や説教をせず、投稿者の言葉を拾って材料を並べる。
@@ -84,9 +85,12 @@ export async function run({ payload, env, init }: FlueContext<unknown, Env>): Pr
 
     if (!decoded.ok) throw new SafeWorkflowError('AI_OUTPUT_INVALID');
 
-    for (const reply of decoded.value.replies) {
-      await insertReply(env.DB, input.threadId, input.targetPostNumber, reply);
-    }
+    await insertReplyBatch(
+      env.DB,
+      input.threadId,
+      input.targetPostNumber,
+      decoded.value.replies,
+    );
 
     return {
       repliesCount: decoded.value.replies.length,
@@ -143,8 +147,6 @@ function parsePayload(value: unknown): Payload {
 
 function buildPrompt(posts: DbPost[], input: Payload): string {
   const history = posts
-    .filter((post) => post.author_name !== '🤔 AIの思考')
-    .slice(-8)
     .map((post) => `${post.post_number}. ${post.author_name}: ${post.body}`)
     .join('\n');
 
@@ -199,44 +201,47 @@ function decodeReplies(textValue: string):
 }
 
 function parseJson(value: string): unknown {
-  const trimmed = value.trim();
-  try {
-    return JSON.parse(trimmed);
-  } catch {
-    const first = trimmed.indexOf('{');
-    const last = trimmed.lastIndexOf('}');
-    if (first >= 0 && last > first) return JSON.parse(trimmed.slice(first, last + 1));
-    throw new Error('invalid JSON');
-  }
+  return JSON.parse(value.trim());
 }
 
 async function fetchPosts(db: D1Database, threadId: string): Promise<DbPost[]> {
   const result = await db
-    .prepare('SELECT post_number, author_name, body, author_type FROM posts WHERE thread_id = ? ORDER BY post_number ASC')
-    .bind(threadId)
+    .prepare(
+      'SELECT post_number, author_name, body, author_type FROM posts WHERE thread_id = ? AND author_name != ? ORDER BY post_number DESC LIMIT 8',
+    )
+    .bind(threadId, LEGACY_THINKING_AUTHOR)
     .all<DbPost>();
-  return result.results;
+  return result.results.reverse();
 }
 
-async function insertReply(
+async function insertReplyBatch(
   db: D1Database,
   threadId: string,
   sourcePostNumber: number,
-  body: string,
+  replies: string[],
 ): Promise<void> {
   for (let attempt = 0; attempt < 5; attempt++) {
     const row = await db
       .prepare('SELECT MAX(post_number) AS max_num FROM posts WHERE thread_id = ?')
       .bind(threadId)
       .first<{ max_num: number | null }>();
-    const postNumber = (row?.max_num ?? 0) + 1;
-    try {
-      await db
+    const firstPostNumber = (row?.max_num ?? 0) + 1;
+    const statements = replies.map((body, index) =>
+      db
         .prepare(`INSERT INTO posts
           (id, thread_id, post_number, author_type, author_name, role, body, source_post_number, user_id)
           VALUES (?, ?, ?, 'ai', '名無しさん', NULL, ?, ?, NULL)`)
-        .bind(crypto.randomUUID(), threadId, postNumber, body, sourcePostNumber)
-        .run();
+        .bind(
+          crypto.randomUUID(),
+          threadId,
+          firstPostNumber + index,
+          body,
+          sourcePostNumber,
+        ),
+    );
+
+    try {
+      await db.batch(statements);
       return;
     } catch (error) {
       const conflict = error instanceof Error &&
