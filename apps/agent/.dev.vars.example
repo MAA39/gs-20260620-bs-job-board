@@ -1,0 +1,4 @@
+SAKURA_API_TOKEN=replace-with-sakura-api-token
+SAKURA_BASE_URL=https://api.ai.sakura.ad.jp/v1
+SAKURA_MODEL_ID=gpt-oss-120b
+INTERNAL_AGENT_TOKEN=must-match-api-worker
