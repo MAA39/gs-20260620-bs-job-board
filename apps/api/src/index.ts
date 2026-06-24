@@ -20,11 +20,12 @@ app.use('*', cors({
 app.get('/health', (c) => c.json({ status: 'ok' }));
 app.route('/api/v1/threads', threadRoutes);
 
-
-// Better Auth handler
 app.on(['POST', 'GET'], '/api/auth/**', async (c) => {
+  if (!c.env?.BETTER_AUTH_SECRET?.trim()) {
+    return c.json({ error: 'service not configured' }, 503);
+  }
   const auth = createAuth(c.env.DB, {
-    secret: c.env.BETTER_AUTH_SECRET || 'dev-secret-change-me',
+    secret: c.env.BETTER_AUTH_SECRET,
     baseURL: new URL(c.req.url).origin,
   });
   return auth.handler(c.req.raw);
