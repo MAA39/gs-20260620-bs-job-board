@@ -1,0 +1,2 @@
+BETTER_AUTH_SECRET=replace-with-a-random-secret
+INTERNAL_AGENT_TOKEN=must-match-agent-worker
