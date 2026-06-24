@@ -4,6 +4,8 @@
   "type": "module",
   "scripts": {
     "dev": "flue dev",
+    "build": "flue build --target cloudflare",
+    "typecheck": "tsc --noEmit",
     "deploy": "flue deploy"
   },
   "dependencies": {
