@@ -195,7 +195,7 @@ function ThreadDetailPage() {
       {displayItems.map((item, idx) => {
         if (item.type === 'thinking') {
           return (
-            <details key={item.post.id} className="thinking" style={{ marginLeft: '12px', borderLeft: '3px solid #c4b89a' }}>
+            <details key={item.post.id} className="thinking" style={{ borderLeft: '3px solid #c4b89a' }}>
               <summary>🤔 AIの思考過程（タップで展開）</summary>
               <div style={{ marginTop: '8px', whiteSpace: 'pre-wrap', fontSize: '0.85rem', color: '#555' }}>{item.post.body}</div>
             </details>
@@ -203,7 +203,7 @@ function ThreadDetailPage() {
         }
         const post = item.post;
         const isLastHuman = post.author_type === 'human' && streaming && streamSourceNum === post.post_number;
-        const indentStyle = item.indent ? { marginLeft: '12px', borderLeft: '3px solid #c4b89a' } : undefined;
+        const indentStyle = item.indent ? { borderLeft: '3px solid #c4b89a' } : undefined;
         return (
           <div key={post.id}>
             <div className={`post ${post.author_type === 'ai' ? 'post-ai' : ''}`} style={indentStyle}>
@@ -211,7 +211,7 @@ function ThreadDetailPage() {
               <div className="post-body">{post.body}</div>
             </div>
             {isLastHuman && (
-              <div style={{ marginLeft: '12px', borderLeft: '3px solid #2f7d68' }}>
+              <div style={{ borderLeft: '3px solid #2f7d68' }}>
                 {streamThinking && (
                   <div className="post" style={{ background: '#fff8e1', borderStyle: 'dashed' }}>
                     <div className="post-header"><strong style={{ background: '#f0b429' }}>...</strong><span>🤔 思考中</span></div>
