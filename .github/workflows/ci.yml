@@ -26,8 +26,8 @@ jobs:
       - run: corepack enable
       - run: corepack prepare pnpm@9.15.0 --activate
       - run: pnpm install --frozen-lockfile
-      - run: pnpm typecheck -- --output-logs=errors-only
-      - run: pnpm build -- --output-logs=errors-only
+      - run: pnpm exec turbo typecheck --output-logs=errors-only
+      - run: pnpm exec turbo build --output-logs=errors-only
       - run: node --check scripts/probe-flue-stream.mjs
       - name: AI route guards
         run: |
