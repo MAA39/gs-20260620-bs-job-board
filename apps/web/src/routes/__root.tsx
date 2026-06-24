@@ -61,5 +61,5 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .thread-preview { color: #555041; font-size: 14px; margin-top: 4px; }
 .badge { border: 1px solid #20211d; background: #fff; font-size: 11px; font-weight: 900; padding: 2px 7px; }
 .status-btn { font-size: 0.8rem; padding: 4px 10px; white-space: nowrap; }
-details.thinking { border: 1px solid #ddd; background: #fafafa; padding: 10px; margin-top: 10px; font-size: 0.8rem; color: #888; cursor: pointer; }
+details.thinking { border: 1px solid #ddd; background: #fafafa; padding: 10px; margin-top: 10px; margin-bottom: 10px; font-size: 0.8rem; color: #888; cursor: pointer; }
 `;

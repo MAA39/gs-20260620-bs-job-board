@@ -44,15 +44,8 @@ function ThreadDetailPage() {
     return () => clearInterval(p);
   }, [params.id, streaming]);
 
-  // スレッド作成直後: AIレスが0件なら自動でSSE開始
-  useEffect(() => {
-    const aiPosts = thread.posts.filter(p => p.author_type === 'ai');
-    const humanPosts = thread.posts.filter(p => p.author_type === 'human');
-    if (aiPosts.length === 0 && humanPosts.length > 0 && !streaming) {
-      const firstHuman = humanPosts[0];
-      startAiStream(firstHuman.post_number);
-    }
-  }, []); // 初回のみ
+  // Flue workflowがAIレスを生成する。5秒ポーリングで取得。
+  // ai-streamの自動発火は二重生成の原因になるため削除（2026/6/24）
 
   const startAiStream = useCallback(async (sourceNum: number) => {
     setStreaming(true); setStreamThinking(''); setStreamContent(''); setStreamSourceNum(sourceNum);
@@ -96,8 +89,6 @@ function ThreadDetailPage() {
       setComment('');
       const fresh = await fetchDetail({ data: { id: params.id } });
       setThread(fresh);
-      const lastPost = fresh.posts[fresh.posts.length - 1];
-      startAiStream(lastPost.post_number);
     } finally { setSubmitting(false); }
   }, [comment, params.id, startAiStream, isAuth]);
 
@@ -212,7 +203,7 @@ function ThreadDetailPage() {
         }
         const post = item.post;
         const isLastHuman = post.author_type === 'human' && streaming && streamSourceNum === post.post_number;
-        const indentStyle = item.indent ? { marginLeft: '12px', borderLeft: '3px solid #c4b89a', paddingLeft: '0' } : undefined;
+        const indentStyle = item.indent ? { marginLeft: '12px', borderLeft: '3px solid #c4b89a' } : undefined;
         return (
           <div key={post.id}>
             <div className={`post ${post.author_type === 'ai' ? 'post-ai' : ''}`} style={indentStyle}>
