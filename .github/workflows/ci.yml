@@ -43,5 +43,6 @@ jobs:
       - run: node --check scripts/probe-flue-stream.mjs
       - name: AI route guards
         run: |
-          test -z "$(grep -R 'api.ai.sakura.ad.jp/v1/chat/completions' apps/api apps/agent/src/workflows --include='*.ts' || true)"
-          test -z "$(grep -R 'reasoning_content' apps/api apps/agent/src/workflows --include='*.ts' || true)"
+          grep_args=(--include='*.ts' --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=.flue-vite --exclude-dir=.wrangler)
+          test -z "$(grep -R "${grep_args[@]}" 'api.ai.sakura.ad.jp/v1/chat/completions' apps/api apps/agent/src/workflows || true)"
+          test -z "$(grep -R "${grep_args[@]}" 'reasoning_content' apps/api apps/agent/src/workflows || true)"
