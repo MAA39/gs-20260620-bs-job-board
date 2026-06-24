@@ -44,5 +44,7 @@ jobs:
       - name: AI route guards
         run: |
           grep_args=(--include='*.ts' --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=.flue-vite --exclude-dir=.wrangler)
-          test -z "$(grep -R "${grep_args[@]}" 'api.ai.sakura.ad.jp/v1/chat/completions' apps/api apps/agent/src/workflows || true)"
-          test -z "$(grep -R "${grep_args[@]}" 'reasoning_content' apps/api apps/agent/src/workflows || true)"
+          source_paths=(apps/api apps/agent/src/workflows)
+          test -z "$(grep -RE "${grep_args[@]}" '(^|[^[:alnum:]_.])fetch[[:space:]]*\(' "${source_paths[@]}" || true)"
+          test -z "$(grep -R "${grep_args[@]}" 'chat/completions' "${source_paths[@]}" || true)"
+          test -z "$(grep -R "${grep_args[@]}" 'reasoning_content' "${source_paths[@]}" || true)"
