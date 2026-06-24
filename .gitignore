@@ -6,5 +6,7 @@ dist/
 .flue-vite/
 .env
 .env.local
+.dev.vars
+.dev.vars.*
 .DS_Store
 .mise.local.toml
