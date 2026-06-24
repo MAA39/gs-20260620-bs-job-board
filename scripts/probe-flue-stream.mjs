@@ -5,26 +5,18 @@ const baseUrl = new URL(args.get('base-url') ?? 'http://127.0.0.1:3583');
 const payloadFile = args.get('payload-file');
 const showText = args.has('show-text');
 
-if (!payloadFile) {
-  throw new Error('--payload-file is required');
-}
+if (!payloadFile) throw new Error('--payload-file is required');
 
 const payload = JSON.parse(await readFile(payloadFile, 'utf8'));
-const admissionUrl = new URL('/workflows/generate-replies', baseUrl);
-const admissionResponse = await fetch(admissionUrl, {
+const admissionResponse = await fetch(new URL('/workflows/generate-replies', baseUrl), {
   method: 'POST',
   headers: { 'content-type': 'application/json' },
   body: JSON.stringify(payload),
 });
-
-if (!admissionResponse.ok) {
-  throw new Error(`workflow admission failed: ${admissionResponse.status}`);
-}
+if (!admissionResponse.ok) throw new Error(`workflow admission failed: ${admissionResponse.status}`);
 
 const admission = await admissionResponse.json();
-if (typeof admission.runId !== 'string') {
-  throw new Error('workflow admission did not return runId');
-}
+if (typeof admission.runId !== 'string') throw new Error('workflow admission did not return runId');
 
 const streamUrl = new URL(
   typeof admission.streamUrl === 'string'
@@ -35,9 +27,7 @@ const streamUrl = new URL(
 streamUrl.searchParams.set('offset', typeof admission.offset === 'string' ? admission.offset : '-1');
 streamUrl.searchParams.set('live', 'sse');
 
-const streamResponse = await fetch(streamUrl, {
-  headers: { accept: 'text/event-stream' },
-});
+const streamResponse = await fetch(streamUrl, { headers: { accept: 'text/event-stream' } });
 if (!streamResponse.ok || !streamResponse.body) {
   throw new Error(`run stream failed: ${streamResponse.status}`);
 }
@@ -60,8 +50,8 @@ let buffer = '';
 
 while (true) {
   const { done, value } = await reader.read();
-  if (done) break;
-  buffer += decoder.decode(value, { stream: true }).replaceAll('\r\n', '\n');
+  buffer += done ? decoder.decode() : decoder.decode(value, { stream: true });
+  buffer = buffer.replaceAll('\r\n', '\n');
 
   while (true) {
     const boundary = buffer.indexOf('\n\n');
@@ -70,8 +60,10 @@ while (true) {
     buffer = buffer.slice(boundary + 2);
     consumeFrame(frame, summary, showText);
   }
+  if (done) break;
 }
 
+if (buffer.trim()) consumeFrame(buffer, summary, showText);
 if (showText) process.stdout.write('\n');
 console.log(JSON.stringify(summary, null, 2));
 
