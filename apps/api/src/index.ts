@@ -21,7 +21,7 @@ app.get('/health', (c) => c.json({ status: 'ok' }));
 app.route('/api/v1/threads', threadRoutes);
 
 app.on(['POST', 'GET'], '/api/auth/**', async (c) => {
-  if (!c.env.BETTER_AUTH_SECRET?.trim()) {
+  if (!c.env?.BETTER_AUTH_SECRET?.trim()) {
     return c.json({ error: 'service not configured' }, 503);
   }
   const auth = createAuth(c.env.DB, {
