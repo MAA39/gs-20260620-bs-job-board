@@ -1,18 +1,16 @@
 import { flue } from '@flue/runtime/routing';
 import { Hono } from 'hono';
 
-type Bindings = { INTERNAL_AGENT_TOKEN?: string };
+const INTERNAL_HOSTS = new Set(['agent', 'localhost', '127.0.0.1', '[::1]', '::1']);
 
-const app = new Hono<{ Bindings: Bindings }>();
+const app = new Hono();
 app.get('/health', (context) => context.json({ ok: true }));
-app.use('/workflows/*', protectInternalRoutes);
-app.use('/runs/*', protectInternalRoutes);
+app.use('/workflows/*', allowInternalHost);
+app.use('/runs/*', allowInternalHost);
 app.route('/', flue());
 
-async function protectInternalRoutes(context: any, next: () => Promise<void>) {
-  const expected = context.env?.INTERNAL_AGENT_TOKEN?.trim();
-  const actual = context.req.header('authorization');
-  if (!expected || actual !== `Bearer ${expected}`) return context.notFound();
+async function allowInternalHost(context: any, next: () => Promise<void>) {
+  if (!INTERNAL_HOSTS.has(new URL(context.req.url).hostname)) return context.notFound();
   return next();
 }
 
