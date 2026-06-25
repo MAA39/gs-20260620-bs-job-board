@@ -5,16 +5,23 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./ai-pipeline": "./src/ai-pipeline.ts",
     "./migrations/*": "./migrations/*"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "build": "tsc --noEmit",
+    "test": "vitest run --config vitest.config.ts --passWithNoTests",
+    "test:integration": "vitest run --config vitest.integration.config.ts"
   },
   "dependencies": {
     "@bs-job-board/contracts": "workspace:*"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20250620.0",
-    "typescript": "^5.8.0"
+    "@cloudflare/vitest-pool-workers": "^0.16.18",
+    "@cloudflare/workers-types": "^4.20260623.0",
+    "typescript": "^5.8.0",
+    "vitest": "^4.1.0",
+    "wrangler": "^4.0.0"
   }
 }
