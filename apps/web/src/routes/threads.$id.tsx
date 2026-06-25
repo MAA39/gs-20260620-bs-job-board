@@ -1,7 +1,7 @@
 import { createFileRoute, Link, useNavigate } from '@tanstack/react-router';
 import { authClient } from '../lib/auth-client';
 import { createServerFn } from '@tanstack/react-start';
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import type { ThreadDetail, Post, CreatePostResponse } from '@bs-job-board/contracts';
 import { useAiRunProgress, getProgressLabel } from '../lib/use-ai-run-progress';
 
@@ -19,9 +19,7 @@ const resolveApiBaseUrl = createServerFn({ method: 'GET' })
     try {
       const { env } = (await import('cloudflare:workers')) as unknown as { env: { API_BASE_URL?: string } };
       return env.API_BASE_URL || 'http://localhost:8787';
-    } catch {
-      return 'http://localhost:8787';
-    }
+    } catch { return 'http://localhost:8787'; }
   });
 
 const fetchDetail = createServerFn({ method: 'GET' }).validator((i: { id: string }) => i)
@@ -38,11 +36,14 @@ const addComment = createServerFn({ method: 'POST' }).validator((i: { threadId: 
 const fixThread = createServerFn({ method: 'POST' }).validator((i: { threadId: string; status: string }) => i)
   .handler(async ({ data }) => { const api = await getApi(); await api(`/api/v1/threads/${data.threadId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: data.status }) }); });
 
+// ── Run search validation ───────────────────────────────
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 type SearchParams = { run?: string };
 
 export const Route = createFileRoute('/threads/$id')({
   validateSearch: (s: Record<string, unknown>): SearchParams => ({
-    run: typeof s.run === 'string' ? s.run : undefined,
+    run: typeof s.run === 'string' && UUID_RE.test(s.run) ? s.run : undefined,
   }),
   loader: async ({ params }) => {
     const [detail, apiBaseUrl] = await Promise.all([
@@ -54,13 +55,34 @@ export const Route = createFileRoute('/threads/$id')({
   component: ThreadDetailPage,
 });
 
-/** key={threadId} で全 local state を reset する wrapper */
+// ── Serial polling hook ─────────────────────────────────
+
+function useSerialPolling(task: () => Promise<void>, intervalMs: number) {
+  const taskRef = useRef(task);
+  taskRef.current = task;
+  useEffect(() => {
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const tick = async () => {
+      try {
+        if (typeof document === 'undefined' || !document.hidden) {
+          await taskRef.current();
+        }
+      } catch { /* polling failure はUIを壊さない */ }
+      finally { if (!stopped) timer = setTimeout(tick, intervalMs); }
+    };
+    timer = setTimeout(tick, intervalMs);
+    return () => { stopped = true; clearTimeout(timer); };
+  }, [intervalMs]);
+}
+
+// ── Keyed wrapper ───────────────────────────────────────
+
 function ThreadDetailPage() {
   const { detail, apiBaseUrl } = Route.useLoaderData();
   const { id: threadId } = Route.useParams();
   const { run } = Route.useSearch();
   const navigate = useNavigate();
-
   return (
     <ThreadDetailPageContent
       key={threadId}
@@ -87,41 +109,54 @@ function ThreadDetailPageContent({ threadId, initial, apiBaseUrl, aiRunId, navig
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
 
-  // ── SSE 進捗: URL search run が唯一の source of truth ──
+  // loader更新を同期（key={threadId}と併用でcross-thread問題は再発しない）
+  useEffect(() => { setThread(initial); }, [initial]);
+
+  // ── latest-wins refresh ─────────────────────────────
+  const refreshVersionRef = useRef(0);
   const refreshThread = useCallback(async () => {
-    try { setThread(await fetchDetail({ data: { id: threadId } })); } catch { /* noop */ }
+    const version = ++refreshVersionRef.current;
+    const next = await fetchDetail({ data: { id: threadId } });
+    if (version === refreshVersionRef.current) setThread(next);
   }, [threadId]);
 
+  // ── SSE進捗 ─────────────────────────────────────────
   const progress = useAiRunProgress(aiRunId, apiBaseUrl, refreshThread);
 
-  // ── 5秒ポーリング（他ユーザーの投稿を拾う） ─────────
-  useEffect(() => {
-    const p = setInterval(refreshThread, 5000);
-    return () => clearInterval(p);
-  }, [refreshThread]);
+  // ── Serial polling（detail のみ）────────────────────
+  useSerialPolling(refreshThread, 5_000);
 
   const [showAuthModal, setShowAuthModal] = useState(false);
   const isAuth = typeof window !== 'undefined' && !!localStorage.getItem('bs-user-id');
 
+  // ── 投稿: 成功と表示同期失敗を分離 ─────────────────
   const handleComment = useCallback(async (e: React.FormEvent) => {
-    e.preventDefault(); if (!comment.trim()) return;
+    e.preventDefault();
+    const body = comment.trim();
+    if (!body) return;
     if (!isAuth) { setShowAuthModal(true); return; }
     setSubmitting(true); setError('');
+
+    let result: CreatePostResponse;
     try {
-      const result = await addComment({ data: { threadId, body: comment.trim() } });
-      setComment('');
-      // URL search を replace で反映。local state 不要。
-      await navigate({
-        to: '/threads/$id',
-        params: { id: threadId },
-        search: { run: result.ai_run.id },
-        replace: true,
-      });
-      setThread(await fetchDetail({ data: { id: threadId } }));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '投稿に失敗しました');
-    } finally { setSubmitting(false); }
-  }, [comment, threadId, isAuth, navigate]);
+      result = await addComment({ data: { threadId, body } });
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '投稿に失敗しました');
+      setSubmitting(false);
+      return;
+    }
+
+    // ここから先は投稿済み。再投稿を防ぐ。
+    setComment('');
+    try {
+      await navigate({ to: '/threads/$id', params: { id: threadId }, search: { run: result.ai_run.id }, replace: true });
+      await refreshThread();
+    } catch {
+      setError('投稿は完了しましたが、画面の更新に失敗しました。再投稿せず再読み込みしてください。');
+    } finally {
+      setSubmitting(false);
+    }
+  }, [comment, threadId, isAuth, navigate, refreshThread]);
 
   const handleAnonAuth = useCallback(async () => {
     try {
@@ -129,45 +164,30 @@ function ThreadDetailPageContent({ threadId, initial, apiBaseUrl, aiRunId, navig
       if (result.data?.user) {
         localStorage.setItem('bs-user-id', result.data.user.id);
         localStorage.setItem('bs-user-name', result.data.user.name || '名無しさん');
-      } else {
-        const id = crypto.randomUUID();
-        localStorage.setItem('bs-user-id', id);
-        localStorage.setItem('bs-user-name', '名無しさん');
-      }
-    } catch {
-      const id = crypto.randomUUID();
-      localStorage.setItem('bs-user-id', id);
-      localStorage.setItem('bs-user-name', '名無しさん');
-    }
+      } else { const id = crypto.randomUUID(); localStorage.setItem('bs-user-id', id); localStorage.setItem('bs-user-name', '名無しさん'); }
+    } catch { const id = crypto.randomUUID(); localStorage.setItem('bs-user-id', id); localStorage.setItem('bs-user-name', '名無しさん'); }
     setShowAuthModal(false);
   }, []);
 
   const handleFix = useCallback(async () => {
     await fixThread({ data: { threadId, status: thread.status === 'fixed' ? 'open' : 'fixed' } });
-    setThread(await fetchDetail({ data: { id: threadId } }));
-  }, [thread.status, threadId]);
+    await refreshThread();
+  }, [thread.status, threadId, refreshThread]);
 
   const displayItems = useMemo(() => {
     const posts = [...thread.posts].sort((a, b) => a.post_number - b.post_number);
     const grouped = new Set<string>();
     const items: Array<{ type: 'post'; post: Post; indent: boolean }> = [];
-
     for (const post of posts) {
-      if (grouped.has(post.id)) continue;
-      if (post.role === 'thinking') continue;
-      items.push({ type: 'post', post, indent: false });
-      grouped.add(post.id);
-
+      if (grouped.has(post.id) || post.role === 'thinking') continue;
+      items.push({ type: 'post', post, indent: false }); grouped.add(post.id);
       if (post.author_type === 'human') {
-        const children = posts.filter(p => p.source_post_number === post.post_number && p.role !== 'thinking' && !grouped.has(p.id));
-        for (const child of children) { items.push({ type: 'post', post: child, indent: true }); grouped.add(child.id); }
-        const nextHuman = posts.find(p => p.author_type === 'human' && p.post_number > post.post_number);
-        const ceiling = nextHuman ? nextHuman.post_number : Infinity;
-        const orphanChildren = posts.filter(p =>
-          !grouped.has(p.id) && p.author_type === 'ai' && p.role !== 'thinking' &&
-          p.source_post_number == null && p.post_number > post.post_number && p.post_number < ceiling
-        );
-        for (const child of orphanChildren) { items.push({ type: 'post', post: child, indent: true }); grouped.add(child.id); }
+        for (const c of posts.filter(p => p.source_post_number === post.post_number && p.role !== 'thinking' && !grouped.has(p.id)))
+          { items.push({ type: 'post', post: c, indent: true }); grouped.add(c.id); }
+        const next = posts.find(p => p.author_type === 'human' && p.post_number > post.post_number);
+        const ceil = next ? next.post_number : Infinity;
+        for (const c of posts.filter(p => !grouped.has(p.id) && p.author_type === 'ai' && p.role !== 'thinking' && p.source_post_number == null && p.post_number > post.post_number && p.post_number < ceil))
+          { items.push({ type: 'post', post: c, indent: true }); grouped.add(c.id); }
       }
     }
     return items;
@@ -178,7 +198,6 @@ function ThreadDetailPageContent({ threadId, initial, apiBaseUrl, aiRunId, navig
   return (
     <div>
       <Link to="/" search={{ sort: 'new' }} style={{ color: '#555041', textDecoration: 'none', fontSize: '0.9rem' }}>← 一覧に戻る</Link>
-
       <div className="card" style={{ marginTop: '8px' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div style={{ flex: 1 }}>
@@ -192,30 +211,29 @@ function ThreadDetailPageContent({ threadId, initial, apiBaseUrl, aiRunId, navig
       </div>
 
       {progressLabel && (
-        <div className="card" style={{
+        <div className="card" role="status" aria-live="polite" style={{
           marginTop: '8px',
-          background: progress.status === 'failed' ? '#fff0f0' : '#f0f5ff',
-          borderLeft: `3px solid ${progress.status === 'failed' ? '#c00' : '#4a90d9'}`,
+          background: progress.status === 'failed' || progress.status === 'connection_failed' ? '#fff0f0' : '#f0f5ff',
+          borderLeft: `3px solid ${progress.status === 'failed' || progress.status === 'connection_failed' ? '#c00' : '#4a90d9'}`,
           padding: '8px 12px', fontSize: '0.85rem',
         }}>
           <span style={{ marginRight: '8px' }}>
-            {progress.status === 'generating' || progress.status === 'repairing' ? '🤖' : progress.status === 'failed' ? '⚠️' : progress.status === 'completed' ? '✅' : '⏳'}
+            {progress.status === 'generating' || progress.status === 'repairing' ? '🤖' : progress.status === 'failed' || progress.status === 'connection_failed' ? '⚠️' : progress.status === 'completed' ? '✅' : '⏳'}
           </span>
           {progressLabel}
+          {progress.status === 'connection_failed' && (
+            <button onClick={() => window.location.reload()} style={{ marginLeft: '8px', fontSize: '0.8rem' }}>再読み込み</button>
+          )}
         </div>
       )}
 
-      <div className="section-header">
-        <span>Posts</span>
-        <span>{thread.posts.filter(p => p.role !== 'thinking').length}件 · 5秒で自動更新</span>
-      </div>
+      <div className="section-header"><span>Posts</span><span>{thread.posts.filter(p => p.role !== 'thinking').length}件</span></div>
 
       {displayItems.map((item) => {
         const post = item.post;
-        const indentStyle = item.indent ? { borderLeft: '3px solid #c4b89a' } : undefined;
         return (
           <div key={post.id}>
-            <div className={`post ${post.author_type === 'ai' ? 'post-ai' : ''}`} style={indentStyle}>
+            <div className={`post ${post.author_type === 'ai' ? 'post-ai' : ''}`} style={item.indent ? { borderLeft: '3px solid #c4b89a' } : undefined}>
               <div className="post-header"><strong>{post.post_number}</strong><span>{post.author_name}</span></div>
               <div className="post-body">{post.body}</div>
             </div>

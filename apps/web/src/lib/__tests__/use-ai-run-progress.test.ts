@@ -371,7 +371,86 @@ describe('stale frame paint', () => {
       source.emitAiRunEvent(JSON.stringify({ status: 'completed', post_ids: ['p1', 'p2'] }));
     });
     expect(result.current.status).toBe('completed');
-    expect(result.current.postIds).toEqual(['p1', 'p2']);
+    expect(result.current.status).toBe('completed');
+    if (result.current.status === 'completed') {
+      expect(result.current.postIds).toEqual(['p1', 'p2']);
+    }
     expect(onCompleted).toHaveBeenCalledOnce();
+  });
+});
+
+// ── PR C: additional tests ──────────────────────────────
+
+describe('PR C: connection + error handling', () => {
+  test('EventSource CLOSED → connection_failed', () => {
+    const onCompleted = vi.fn();
+    const { result } = renderHook(
+      () => useAiRunProgress('run-closed', 'http://test-api', onCompleted),
+    );
+    const source = MockEventSource.latest()!;
+
+    // CLOSED状態でonerror発火
+    act(() => {
+      source.readyState = MockEventSource.CLOSED;
+      source.onerror?.(new Event('error'));
+    });
+
+    expect(result.current.status).toBe('connection_failed');
+  });
+
+  test('unknown error_code → failed / AI_RUN_FAILED', () => {
+    const onCompleted = vi.fn();
+    const { result } = renderHook(
+      () => useAiRunProgress('run-unk-err', 'http://test-api', onCompleted),
+    );
+    const source = MockEventSource.latest()!;
+
+    act(() => {
+      source.emitAiRunEvent(JSON.stringify({ status: 'failed', error_code: 'FUTURE_NEW_CODE' }));
+    });
+
+    expect(result.current.status).toBe('failed');
+    if (result.current.status === 'failed') {
+      expect(result.current.errorCode).toBe('AI_RUN_FAILED');
+    }
+  });
+
+  test('malformed completed (bad post_ids) → failed / AI_EVENT_INVALID', () => {
+    const onCompleted = vi.fn();
+    const { result } = renderHook(
+      () => useAiRunProgress('run-bad-completed', 'http://test-api', onCompleted),
+    );
+    const source = MockEventSource.latest()!;
+
+    act(() => {
+      source.emitAiRunEvent(JSON.stringify({ status: 'completed', post_ids: [1, 2] }));
+    });
+
+    expect(result.current.status).toBe('failed');
+    if (result.current.status === 'failed') {
+      expect(result.current.errorCode).toBe('AI_EVENT_INVALID');
+    }
+  });
+
+  test('terminal後の遅延onerrorでcompleted/failedを上書きしない', () => {
+    const onCompleted = vi.fn();
+    const { result } = renderHook(
+      () => useAiRunProgress('run-late-err', 'http://test-api', onCompleted),
+    );
+    const source = MockEventSource.latest()!;
+
+    act(() => {
+      source.emitAiRunEvent(JSON.stringify({ status: 'completed', post_ids: ['p1'] }));
+    });
+    expect(result.current.status).toBe('completed');
+
+    // 遅延onerror
+    act(() => {
+      source.readyState = MockEventSource.CLOSED;
+      source.onerror?.(new Event('error'));
+    });
+
+    // completedのまま（connection_failedに上書きされない）
+    expect(result.current.status).toBe('completed');
   });
 });
