@@ -8,9 +8,9 @@
 
 - application D1 migrationの保管
 - thread / post / reaction query関数
-- Web/API/Agentから利用されるD1操作
+- API Workerから利用されるD1操作
 
-現行packageはCloudflareのglobal `D1Database`型へ直接依存する。DB client abstractionやtransaction command layerはまだない。
+現行packageはCloudflareのglobal `D1Database`型へ直接依存する。DB client abstractionやtransaction command layerはまだない。Agent Workerはこのpackageを使わず、workflow内でD1 SQLを直接実行する。
 
 ## migration一覧
 
@@ -82,7 +82,7 @@ Better Auth schemaのcolumn名はcamelCase。
 
 ### `0006_user_id.sql`
 
-`posts.user_id TEXT REFERENCES user(id)`を追加。
+`posts.user_id TEXT REFERENCES "user"(id)`を追加。
 
 ### `0007_unique_post_number.sql`
 
@@ -98,11 +98,11 @@ post number競合防止。
 
 ```text
 id
- title
- body
- status
- created_at
- reaction_count
+title
+body
+status
+created_at
+reaction_count
 ```
 
 ### posts
@@ -252,4 +252,4 @@ AgentのSQLがpackageへ集約されていない。
 - thread / post input validationなし
 - migration integration testなし
 - cascade方針がtable間で統一されていない
-- timestampsの形式がapplication tableとBetter Auth tableで混在
+- application tableとBetter Auth tableでcolumn命名規則が混在
