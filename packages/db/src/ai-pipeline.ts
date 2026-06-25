@@ -412,8 +412,7 @@ export const completeRunAtomic = async <
 
   const postIds = input.replies.map((reply) => reply.postId);
 
-  // posts INSERT: WHERE EXISTS で run が generating|repairing であることを保証
-  // terminal 化後の post 孤立を防ぐ (blocking review #1)
+  // posts INSERT: status guard + source/thread 所属検証 (post-merge blocking #2)
   const insertPostStatements = input.replies.map((reply) =>
     input.db
       .prepare(
@@ -426,7 +425,11 @@ export const completeRunAtomic = async <
           "'ai', '名無しさん', NULL, ?,",
           '(SELECT post_number FROM posts WHERE id = ?),',
           '?, NULL',
-          "WHERE EXISTS (SELECT 1 FROM ai_runs WHERE id = ? AND status IN ('generating', 'repairing'))",
+          'WHERE EXISTS (',
+          '  SELECT 1 FROM ai_runs a',
+          '  JOIN posts p ON a.source_post_id = p.id AND p.thread_id = a.thread_id',
+          "  WHERE a.id = ? AND a.status IN ('generating', 'repairing')",
+          ')',
         ].join(' '),
       )
       .bind(
@@ -446,7 +449,11 @@ export const completeRunAtomic = async <
         [
           'INSERT INTO ai_run_posts (ai_run_id, post_id, ordinal)',
           'SELECT ?, ?, ?',
-          "WHERE EXISTS (SELECT 1 FROM ai_runs WHERE id = ? AND status IN ('generating', 'repairing'))",
+          'WHERE EXISTS (',
+          '  SELECT 1 FROM ai_runs a',
+          '  JOIN posts p ON a.source_post_id = p.id AND p.thread_id = a.thread_id',
+          "  WHERE a.id = ? AND a.status IN ('generating', 'repairing')",
+          ')',
         ].join(' '),
       )
       .bind(input.aiRunId, reply.postId, index, input.aiRunId),
@@ -473,6 +480,8 @@ export const completeRunAtomic = async <
               `completed_at = COALESCE(completed_at, ${now()}),`,
               `updated_at = ${now()}`,
               `WHERE id = ? AND status IN ('generating', 'repairing')`,
+              // post-merge blocking #2: source_post_id が thread_id に属する検証
+              'AND thread_id = (SELECT thread_id FROM posts WHERE id = source_post_id)',
             ].join(' '),
           )
           .bind(
@@ -518,7 +527,20 @@ export const completeRunAtomic = async <
     throw new DbConflictError('completed ai_run result hash conflict');
   }
 
-  return { aiRunId: input.aiRunId, postIds, duplicate: false };
+  // concurrent same-hash 対策 (post-merge blocking #1):
+  // 別呼び出しが先に complete した場合、今回の batch 内 INSERT は
+  // WHERE EXISTS で 0 行になる。caller 提供の postIds は DB に存在しない。
+  // ai_run_posts から実際に保存された postIds を読み返して返す。
+  const savedPostIds = await selectPostIdsForRun(input.db, input.aiRunId);
+  const insertedByThisCall =
+    savedPostIds.length === postIds.length &&
+    savedPostIds.every((id, i) => id === postIds[i]);
+
+  return {
+    aiRunId: input.aiRunId,
+    postIds: savedPostIds,
+    duplicate: !insertedByThisCall,
+  };
 };
 
 // ── Event query ─────────────────────────────────────────
