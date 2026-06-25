@@ -52,3 +52,8 @@ jobs:
           test -z "$(grep -RE "${grep_args[@]}" '(^|[^[:alnum:]_.])fetch[[:space:]]*\(' "${source_paths[@]}" || true)"
           test -z "$(grep -R "${grep_args[@]}" 'chat/completions' "${source_paths[@]}" || true)"
           test -z "$(grep -R "${grep_args[@]}" 'reasoning_content' "${source_paths[@]}" || true)"
+      - name: Agent D1 isolation guard
+        run: |
+          test -z "$(grep -RE 'env\.DB|D1Database' apps/agent/src/workflows || true)"
+          test -z "$(grep -R '"d1_databases"' apps/agent/wrangler.jsonc apps/agent/.flue-vite.wrangler.jsonc || true)"
+          grep -Eq '"workers_dev"[[:space:]]*:[[:space:]]*false' apps/agent/wrangler.jsonc

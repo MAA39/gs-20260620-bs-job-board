@@ -64,13 +64,21 @@ async function dispatchWithRunLifecycle(
 ): Promise<void> {
   // callback key 未設定チェック
   if (!callbackKey?.trim()) {
-    await failRun({
-      db: db as unknown as Parameters<typeof failRun>[0]['db'],
-      aiRunId,
-      eventId: crypto.randomUUID(),
-      errorCode: 'AI_CONFIGURATION_ERROR',
-      errorMessage: 'Internal callback key not configured',
-    }).catch(() => undefined);
+    try {
+      await failRun({
+        db: db as unknown as Parameters<typeof failRun>[0]['db'],
+        aiRunId,
+        eventId: crypto.randomUUID(),
+        errorCode: 'AI_CONFIGURATION_ERROR',
+        errorMessage: 'Internal callback key not configured',
+      });
+    } catch (failError) {
+      console.error('failRun failed after missing callback key', {
+        aiRunId,
+        name: failError instanceof Error ? failError.name : 'UnknownError',
+      });
+      throw failError;
+    }
     return;
   }
 
@@ -82,18 +90,46 @@ async function dispatchWithRunLifecycle(
   });
 
   // generation context 組み立て（ADR-004: API が context を構築する）
-  const ctx = await getAiGenerationContext(
-    db as unknown as Parameters<typeof getAiGenerationContext>[0],
-    aiRunId,
-  );
-  if (!ctx) {
-    await failRun({
-      db: db as unknown as Parameters<typeof failRun>[0]['db'],
+  let ctx: Awaited<ReturnType<typeof getAiGenerationContext>>;
+  try {
+    ctx = await getAiGenerationContext(
+      db as unknown as Parameters<typeof getAiGenerationContext>[0],
       aiRunId,
-      eventId: crypto.randomUUID(),
-      errorCode: 'AI_DISPATCH_FAILED',
-      errorMessage: 'generation context not found',
-    }).catch(() => undefined);
+    );
+  } catch (contextError) {
+    try {
+      await failRun({
+        db: db as unknown as Parameters<typeof failRun>[0]['db'],
+        aiRunId,
+        eventId: crypto.randomUUID(),
+        errorCode: 'AI_DISPATCH_FAILED',
+        errorMessage: 'Failed to build generation context',
+      });
+      return;
+    } catch (failError) {
+      console.error('failRun failed after context build error', {
+        aiRunId,
+        name: failError instanceof Error ? failError.name : 'UnknownError',
+      });
+      throw contextError;
+    }
+  }
+  if (!ctx) {
+    try {
+      await failRun({
+        db: db as unknown as Parameters<typeof failRun>[0]['db'],
+        aiRunId,
+        eventId: crypto.randomUUID(),
+        errorCode: 'AI_DISPATCH_FAILED',
+        errorMessage: 'generation context not found',
+      });
+    } catch (failError) {
+      console.error('failRun failed after missing context', {
+        aiRunId,
+        name: failError instanceof Error ? failError.name : 'UnknownError',
+      });
+      throw failError;
+    }
     return;
   }
 
@@ -139,14 +175,20 @@ async function dispatchWithRunLifecycle(
       aiRunId,
     ).catch(() => null);
     if (run && run.status !== 'completed' && run.status !== 'failed') {
-      await failRun({
-        db: db as unknown as Parameters<typeof failRun>[0]['db'],
-        aiRunId,
-        eventId: crypto.randomUUID(),
-        errorCode: 'AI_DISPATCH_FAILED',
-        errorMessage:
-          error instanceof Error ? error.message : 'Unknown dispatch error',
-      }).catch(() => undefined);
+      try {
+        await failRun({
+          db: db as unknown as Parameters<typeof failRun>[0]['db'],
+          aiRunId,
+          eventId: crypto.randomUUID(),
+          errorCode: 'AI_DISPATCH_FAILED',
+          errorMessage: 'Workflow dispatch failed',
+        });
+      } catch (failError) {
+        console.error('failRun failed after dispatch error', {
+          aiRunId,
+          name: failError instanceof Error ? failError.name : 'UnknownError',
+        });
+      }
     }
     throw error;
   }

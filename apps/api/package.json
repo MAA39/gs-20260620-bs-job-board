@@ -7,7 +7,9 @@
     "dev": "wrangler dev",
     "build": "wrangler deploy --dry-run",
     "deploy": "wrangler deploy",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --config vitest.config.ts --passWithNoTests",
+    "test:integration": "vitest run --config vitest.integration.config.ts"
   },
   "dependencies": {
     "@bs-job-board/agent": "workspace:*",
@@ -20,8 +22,10 @@
     "kysely-d1": "^0.4.0"
   },
   "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.16.18",
     "@cloudflare/workers-types": "^4.20250620.0",
     "typescript": "^5.8.0",
+    "vitest": "^4.1.0",
     "wrangler": "^4.0.0"
   }
 }
