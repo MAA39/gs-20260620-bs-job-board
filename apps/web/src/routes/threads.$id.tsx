@@ -4,8 +4,6 @@ import { createServerFn } from '@tanstack/react-start';
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import type { ThreadDetail, Post } from '@bs-job-board/contracts';
 
-const API_URL = 'https://bs-job-board-api.masa-nekoshinshi39.workers.dev';
-
 async function getApi() {
   try {
     const { env } = (await import('cloudflare:workers')) as unknown as { env: { API: { fetch: typeof fetch } } };
@@ -19,7 +17,12 @@ const fetchDetail = createServerFn({ method: 'GET' }).validator((i: { id: string
   .handler(async ({ data }) => { const api = await getApi(); const r = await api(`/api/v1/threads/${data.id}`); if (!r.ok) throw new Error('not found'); return (await r.json()) as ThreadDetail; });
 
 const addComment = createServerFn({ method: 'POST' }).validator((i: { threadId: string; body: string }) => i)
-  .handler(async ({ data }) => { const api = await getApi(); await api(`/api/v1/threads/${data.threadId}/posts`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ body: data.body }) }); });
+  .handler(async ({ data }) => {
+    const api = await getApi();
+    const r = await api(`/api/v1/threads/${data.threadId}/posts`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ body: data.body }) });
+    if (!r.ok) throw new Error(`post failed: ${r.status}`);
+    return (await r.json()) as { id: string; post_number: number; ai_run: { id: string } };
+  });
 
 const fixThread = createServerFn({ method: 'POST' }).validator((i: { threadId: string; status: string }) => i)
   .handler(async ({ data }) => { const api = await getApi(); await api(`/api/v1/threads/${data.threadId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: data.status }) }); });
@@ -32,48 +35,12 @@ function ThreadDetailPage() {
   const [thread, setThread] = useState(initial);
   const [comment, setComment] = useState('');
   const [submitting, setSubmitting] = useState(false);
-  const [streaming, setStreaming] = useState(false);
-  const [streamThinking, setStreamThinking] = useState('');
-  const [streamContent, setStreamContent] = useState('');
-  const [streamSourceNum, setStreamSourceNum] = useState<number | null>(null);
+  const [error, setError] = useState('');
 
   useEffect(() => { setThread(initial); }, [initial]);
   useEffect(() => {
-    if (streaming) return;
     const p = setInterval(async () => { try { setThread(await fetchDetail({ data: { id: params.id } })); } catch {} }, 5000);
     return () => clearInterval(p);
-  }, [params.id, streaming]);
-
-  // Flue workflowがAIレスを生成する。5秒ポーリングで取得。
-  // ai-streamの自動発火は二重生成の原因になるため削除（2026/6/24）
-
-  const startAiStream = useCallback(async (sourceNum: number) => {
-    setStreaming(true); setStreamThinking(''); setStreamContent(''); setStreamSourceNum(sourceNum);
-    try {
-      const res = await fetch(`${API_URL}/api/v1/threads/${params.id}/ai-stream`, { method: 'POST' });
-      if (!res.ok || !res.body) return;
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n'); buffer = lines.pop() ?? '';
-        for (const line of lines) {
-          if (!line.startsWith('data: ') || line.includes('[DONE]')) continue;
-          try {
-            const chunk = JSON.parse(line.slice(6));
-            const delta = chunk?.choices?.[0]?.delta || {};
-            if (delta.reasoning_content) setStreamThinking(prev => prev + delta.reasoning_content);
-            if (delta.content) setStreamContent(prev => prev + delta.content);
-          } catch {}
-        }
-      }
-    } finally {
-      setStreaming(false); setStreamSourceNum(null);
-      setTimeout(async () => { try { setThread(await fetchDetail({ data: { id: params.id } })); } catch {} }, 1000);
-    }
   }, [params.id]);
 
   const [showAuthModal, setShowAuthModal] = useState(false);
@@ -83,14 +50,18 @@ function ThreadDetailPage() {
   const handleComment = useCallback(async (e: React.FormEvent) => {
     e.preventDefault(); if (!comment.trim()) return;
     if (!isAuth) { setShowAuthModal(true); return; }
-    setSubmitting(true);
+    setSubmitting(true); setError('');
     try {
-      await addComment({ data: { threadId: params.id, body: comment.trim() } });
+      const result = await addComment({ data: { threadId: params.id, body: comment.trim() } });
       setComment('');
+      // ai_run.id is available in result for future SSE (#12)
+      void result;
       const fresh = await fetchDetail({ data: { id: params.id } });
       setThread(fresh);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '投稿に失敗しました');
     } finally { setSubmitting(false); }
-  }, [comment, params.id, startAiStream, isAuth]);
+  }, [comment, params.id, isAuth]);
 
   const handleAnonAuth = useCallback(async () => {
     try {
@@ -116,37 +87,25 @@ function ThreadDetailPage() {
     setThread(await fetchDetail({ data: { id: params.id } }));
   }, [thread.status, params.id]);
 
-  // post_number順に統合表示。人間postの直後に紐づくAI+thinkingをぶら下げる
+  // post_number順に統合表示。人間postの直後に紐づくAIをぶら下げる
   const displayItems = useMemo(() => {
     const posts = [...thread.posts].sort((a, b) => a.post_number - b.post_number);
     const grouped = new Set<string>();
-    const items: Array<{ type: 'post'; post: Post; indent: boolean } | { type: 'thinking'; post: Post }> = [];
+    const items: Array<{ type: 'post'; post: Post; indent: boolean }> = [];
 
     for (const post of posts) {
       if (grouped.has(post.id)) continue;
-
-      // thinkingはスキップ（親postの直後にぶら下げる）
       if (post.role === 'thinking') continue;
 
       items.push({ type: 'post', post, indent: false });
       grouped.add(post.id);
 
-      // 人間postの直後に紐づくAI + thinking をぶら下げる
       if (post.author_type === 'human') {
-        // source_post_numberで紐づくAIレス
         const children = posts.filter(p => p.source_post_number === post.post_number && p.role !== 'thinking' && !grouped.has(p.id));
         for (const child of children) {
           items.push({ type: 'post', post: child, indent: true });
           grouped.add(child.id);
         }
-        // source_post_numberで紐づくthinking
-        const thinks = posts.filter(p => p.source_post_number === post.post_number && p.role === 'thinking' && !grouped.has(p.id));
-        for (const t of thinks) {
-          items.push({ type: 'thinking', post: t });
-          grouped.add(t.id);
-        }
-
-        // source_post_number null のAI+thinkingも、post_number的に次の人間postの前まで取り込む
         const nextHuman = posts.find(p => p.author_type === 'human' && p.post_number > post.post_number);
         const ceiling = nextHuman ? nextHuman.post_number : Infinity;
         const orphanChildren = posts.filter(p =>
@@ -156,14 +115,6 @@ function ThreadDetailPage() {
         for (const child of orphanChildren) {
           items.push({ type: 'post', post: child, indent: true });
           grouped.add(child.id);
-        }
-        const orphanThinks = posts.filter(p =>
-          !grouped.has(p.id) && p.role === 'thinking' &&
-          p.source_post_number == null && p.post_number > post.post_number && p.post_number < ceiling
-        );
-        for (const t of orphanThinks) {
-          items.push({ type: 'thinking', post: t });
-          grouped.add(t.id);
         }
       }
     }
@@ -189,20 +140,11 @@ function ThreadDetailPage() {
 
       <div className="section-header">
         <span>Posts</span>
-        <span>{thread.posts.filter(p => p.role !== 'thinking').length}件{streaming ? ' · AI生成中...' : ' · 5秒で自動更新'}</span>
+        <span>{thread.posts.filter(p => p.role !== 'thinking').length}件 · 5秒で自動更新</span>
       </div>
 
-      {displayItems.map((item, idx) => {
-        if (item.type === 'thinking') {
-          return (
-            <details key={item.post.id} className="thinking" style={{ borderLeft: '3px solid #c4b89a' }}>
-              <summary>🤔 AIの思考過程（タップで展開）</summary>
-              <div style={{ marginTop: '8px', whiteSpace: 'pre-wrap', fontSize: '0.85rem', color: '#555' }}>{item.post.body}</div>
-            </details>
-          );
-        }
+      {displayItems.map((item) => {
         const post = item.post;
-        const isLastHuman = post.author_type === 'human' && streaming && streamSourceNum === post.post_number;
         const indentStyle = item.indent ? { borderLeft: '3px solid #c4b89a' } : undefined;
         return (
           <div key={post.id}>
@@ -210,31 +152,17 @@ function ThreadDetailPage() {
               <div className="post-header"><strong>{post.post_number}</strong><span>{post.author_name}</span></div>
               <div className="post-body">{post.body}</div>
             </div>
-            {isLastHuman && (
-              <div style={{ borderLeft: '3px solid #2f7d68' }}>
-                {streamThinking && (
-                  <div className="post" style={{ background: '#fff8e1', borderStyle: 'dashed' }}>
-                    <div className="post-header"><strong style={{ background: '#f0b429' }}>...</strong><span>🤔 思考中</span></div>
-                    <div className="post-body" style={{ fontSize: '0.8rem', color: '#666' }}>{streamThinking}<span className="cursor" /></div>
-                  </div>
-                )}
-                {streamContent && (
-                  <div className="post" style={{ background: '#eef5ef', borderStyle: 'dashed' }}>
-                    <div className="post-header"><strong style={{ background: '#2f7d68' }}>...</strong><span>名無しさん@AI（生成中）</span></div>
-                    <div className="post-body">{streamContent}<span className="cursor" /></div>
-                  </div>
-                )}
-              </div>
-            )}
           </div>
         );
       })}
+
+      {error && <div className="card" style={{ marginTop: '8px', background: '#fff0f0', color: '#c00' }}>{error}</div>}
 
       <div className="card" style={{ marginTop: '16px' }}>
         <p className="eyebrow">Reply</p>
         <form onSubmit={handleComment} style={{ marginTop: '8px' }}>
           <input value={comment} onChange={e => setComment(e.target.value)} placeholder="名無しさんとしてレスを書く" required />
-          <button type="submit" disabled={submitting || streaming}>{submitting ? '送信中...' : streaming ? 'AI生成中...' : 'レスする'}</button>
+          <button type="submit" disabled={submitting}>{submitting ? '送信中...' : 'レスする'}</button>
         </form>
       </div>
 
@@ -249,8 +177,6 @@ function ThreadDetailPage() {
           </div>
         </div>
       )}
-
-      <style dangerouslySetInnerHTML={{ __html: '.cursor{display:inline-block;width:2px;height:1em;background:#20211d;animation:blink 1s infinite}@keyframes blink{0%,50%{opacity:1}51%,100%{opacity:0}}' }} />
     </div>
   );
 }

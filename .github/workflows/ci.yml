@@ -61,3 +61,8 @@ jobs:
         run: |
           # Public thread routes must not use legacy addPost (ADR-004: AI posts via callback only)
           test -z "$(grep -R 'addPost' apps/api/src/routes/threads.ts || true)"
+      - name: Web legacy guard
+        run: |
+          # Removed in #24: ai-stream and reasoning_content must not re-appear
+          test -z "$(grep -R 'ai-stream' apps/web/src/ || true)"
+          test -z "$(grep -R 'reasoning_content' apps/web/src/ || true)"
