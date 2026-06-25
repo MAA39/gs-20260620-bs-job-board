@@ -1,5 +1,4 @@
 import { Hono } from 'hono';
-import type { CreatePostInput } from '@bs-job-board/contracts';
 import {
   listThreadsSorted,
   getThreadDetail,
@@ -267,7 +266,21 @@ export const threadRoutes = new Hono<{ Bindings: Bindings }>()
   })
   .post('/:id/posts', async (context) => {
     const threadId = context.req.param('id');
-    const input = await context.req.json<CreatePostInput>();
+
+    // Strict payload validation: only { body: string } accepted (ADR-004)
+    const raw = await context.req.json<unknown>().catch(() => null);
+    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+      return context.json({ error: 'invalid payload' }, 400);
+    }
+    const record = raw as Record<string, unknown>;
+    const extraKeys = Object.keys(record).filter((k) => k !== 'body');
+    if (extraKeys.length > 0) {
+      return context.json({ error: 'server-owned fields are not allowed' }, 400);
+    }
+    if (typeof record.body !== 'string' || !record.body.trim()) {
+      return context.json({ error: 'body must be a non-empty string' }, 400);
+    }
+    const body = record.body.trim();
 
     const sessionUser = await getSessionUser(
       context.env.DB,
@@ -297,7 +310,7 @@ export const threadRoutes = new Hono<{ Bindings: Bindings }>()
         id: postId,
         threadId,
         authorName,
-        body: input.body,
+        body,
         userId,
       },
       aiRun: {
