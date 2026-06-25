@@ -19,7 +19,7 @@ export type CreatePostResponse = {
 
 // ── AI run SSE ──────────────────────────────────────────
 
-/** 公開境界で許可する error code。runtime 配列から型を導出する。 */
+/** 公開境界で許可する error code。runtime 配列から型を導出。 */
 export const PUBLIC_AI_ERROR_CODES = [
   'AI_CONFIGURATION_ERROR',
   'AI_PROVIDER_TIMEOUT',
@@ -32,18 +32,25 @@ export const PUBLIC_AI_ERROR_CODES = [
 
 export type PublicAiErrorCode = (typeof PUBLIC_AI_ERROR_CODES)[number];
 
-/** 公開 error code の Set。API/Web 両方で重複なく参照する。 */
-export const PUBLIC_AI_ERROR_CODE_SET = new Set<string>(PUBLIC_AI_ERROR_CODES);
+/** Setは非公開。type guardだけ公開する。 */
+const publicAiErrorCodeSet = new Set<PublicAiErrorCode>(PUBLIC_AI_ERROR_CODES);
+
+export function isPublicAiErrorCode(value: unknown): value is PublicAiErrorCode {
+  return typeof value === 'string' && publicAiErrorCodeSet.has(value as PublicAiErrorCode);
+}
 
 /** ADR-003: 公開SSEで配信する allow-list 済みイベント */
 export type PublicAiRunEvent =
   | { status: 'queued' | 'admitted' | 'generating' | 'repairing' }
-  | { status: 'completed'; post_ids: string[] }
+  | { status: 'completed'; post_ids: readonly string[] }
   | { status: 'failed'; error_code: PublicAiErrorCode };
 
-/** useAiRunProgress の状態 */
-export type AiRunProgress = {
-  status: PublicAiRunEvent['status'] | 'connecting' | 'reconnecting' | 'idle';
-  postIds?: string[];
-  errorCode?: string;
-};
+/** useAiRunProgress の状態。connection_failed は Web 専用。 */
+export type AiRunProgress =
+  | { status: 'idle' }
+  | { status: 'connecting' }
+  | { status: 'reconnecting' }
+  | { status: 'connection_failed' }
+  | { status: 'queued' | 'admitted' | 'generating' | 'repairing' }
+  | { status: 'completed'; postIds: readonly string[] }
+  | { status: 'failed'; errorCode: PublicAiErrorCode };

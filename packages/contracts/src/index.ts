@@ -20,5 +20,5 @@ export type {
 
 export {
   PUBLIC_AI_ERROR_CODES,
-  PUBLIC_AI_ERROR_CODE_SET,
+  isPublicAiErrorCode,
 } from './api.ts';

@@ -31,7 +31,7 @@ export default defineConfig(async () => {
       }),
     ],
     test: {
-      include: ['src/**/*.integration.test.ts', 'src/**/*.unit.test.ts'],
+      include: ['src/**/*.integration.test.ts'],
       name: 'api-integration',
       setupFiles: ['src/apply-d1-migrations.integration.ts'],
     },
