@@ -4,6 +4,7 @@
 
 - `architecture-audit.md`: V1 mainの監査結果と改修計画
 - `adr/003-flue-streaming-boundary.md`: FlueとSSEの責務境界
+- `adr/004-ai-run-lifecycle-and-db-authority.md`: AI run状態機械、冪等性、DB書き込み権限
 - `runbooks/flue-stream-probe.md`: Flue Durable Streamsの検証手順
 
 ## 運用ルール
