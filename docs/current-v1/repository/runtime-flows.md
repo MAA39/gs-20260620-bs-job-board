@@ -62,7 +62,12 @@ Browser authClient
   -> browser localStorageへuser ID/name保存
 ```
 
-認証失敗時、browserがUUIDを生成してlocalStorageへ保存する。このUUIDはBetter Auth sessionではない。
+fallback behaviorは画面ごとに異なる。
+
+- Home: responseにuserがない場合だけbrowser UUID fallback。requestがthrowした場合はcatchしない
+- Thread detail: userなし・throwの両方でbrowser UUID fallback
+
+browser UUIDはBetter Auth sessionではない。
 
 通常のthread/post Server FunctionはWeb WorkerからService BindingでAPIへ送るが、browser cookieを明示転送しない。
 
@@ -139,19 +144,25 @@ API-only writerは未成立。
 
 ### Web polling failure
 
-- exceptionを無視
-- 最後に成功した表示を維持
+Home一覧:
+
+- HTTP non-2xxは`fetchThreads()`が空配列を返すため、表示一覧が空になる
+- requestがthrowした場合はinterval側catchで無視し、直前表示を維持する
+
+Thread detail:
+
+- request failureはinterval側catchで無視し、直前表示を維持する
 
 ### auth failure
 
-- API session helperはnullへ変換
-- Webはbrowser UUID fallbackを使用
+- API session helperは例外をnullへ変換
+- Web fallback behaviorはHomeとThread detailで異なる
 
 ## consistencyの現状
 
 - thread + initial postはD1 batch
 - AI replies 3件はD1 batch
-- human replyとAI run admissionはatomicではない
+- human post保存とworkflow admissionはatomicではない
 - AI generationの二重dispatchを防ぐkeyなし
 - reaction存在確認とtoggle writeはatomicではない
 - post numberはMAX+1 + unique index + retry
