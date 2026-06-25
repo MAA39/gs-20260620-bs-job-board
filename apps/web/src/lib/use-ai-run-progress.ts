@@ -42,11 +42,7 @@ export function useAiRunProgress(
 
   useEffect(() => {
     if (!aiRunId) {
-      // aiRunId が null なら idle。ただし terminal 状態を上書きしない。
-      setProgress((prev) => {
-        if (prev.status === 'completed' || prev.status === 'failed') return prev;
-        return { status: 'idle' };
-      });
+      setProgress({ status: 'idle' });
       return;
     }
 

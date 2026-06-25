@@ -67,9 +67,9 @@ function ThreadDetailPage() {
 
   useEffect(() => { setThread(initial); }, [initial]);
 
-  // search.run 変更時に tracked run を同期
+  // search.run 変更時に tracked run を同期（別スレッド移動時は null でクリア）
   useEffect(() => {
-    if (searchRunId) setAiRunId(searchRunId);
+    setAiRunId(searchRunId ?? null);
   }, [searchRunId]);
 
   // ── SSE 進捗 ──────────────────────────────────────────

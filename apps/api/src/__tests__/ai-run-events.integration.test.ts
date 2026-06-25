@@ -254,6 +254,9 @@ describe('GET /api/v1/ai-runs/:aiRunId/events', () => {
   });
 
   test('SSE does not create or modify runs', async () => {
+    const beforeCount = await database
+      .prepare('SELECT COUNT(*) as cnt FROM ai_runs')
+      .first<{ cnt: number }>();
     const beforeRun = await database
       .prepare('SELECT status FROM ai_runs WHERE id = ?')
       .bind(TEST_RUN_COMPLETED_ID)
@@ -261,17 +264,16 @@ describe('GET /api/v1/ai-runs/:aiRunId/events', () => {
 
     await sseRequest(TEST_RUN_COMPLETED_ID, { after: '0' });
 
+    const afterCount = await database
+      .prepare('SELECT COUNT(*) as cnt FROM ai_runs')
+      .first<{ cnt: number }>();
     const afterRun = await database
       .prepare('SELECT status FROM ai_runs WHERE id = ?')
       .bind(TEST_RUN_COMPLETED_ID)
       .first<{ status: string }>();
 
-    const beforeCount = await database
-      .prepare('SELECT COUNT(*) as cnt FROM ai_runs')
-      .first<{ cnt: number }>();
-
+    expect(afterCount!.cnt).toBe(beforeCount!.cnt);
     expect(afterRun!.status).toBe(beforeRun!.status);
-    expect(beforeCount!.cnt).toBeGreaterThan(0);
   });
 
   // ── 回帰テスト ──────────────────────────────────────
@@ -413,4 +415,8 @@ describe('GET /api/v1/ai-runs/:aiRunId/events', () => {
     const data = JSON.parse(events[0].data!);
     expect(data.error_code).toBe('AI_RUN_FAILED');
   });
+
+  // 注: 未知eventTypeはD1 CHECK制約 (event_type IN ('status','completed','failed')) で
+  // 保存自体が拒否される。Map fail-closedはD1制約を通過した場合の二重保護。
+  // Unit testでroute factory mockを使って検証する（PR B）。
 });

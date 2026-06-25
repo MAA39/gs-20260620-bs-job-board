@@ -89,7 +89,7 @@ afterEach(() => {
 describe('useAiRunProgress', () => {
   const API_BASE = 'http://test-api';
 
-  test('高1回帰: completed後にaiRunIdがnullに変わってもidle上書きされない', () => {
+  test('高1回帰: completed後にaiRunIdがnullに変わるとidleに戻る（別スレッド移動）', () => {
     const onCompleted = vi.fn();
     const { result, rerender } = renderHook(
       ({ aiRunId }) => useAiRunProgress(aiRunId, API_BASE, onCompleted),
@@ -98,7 +98,6 @@ describe('useAiRunProgress', () => {
 
     const source = MockEventSource.latest()!;
 
-    // completed イベント受信
     act(() => {
       source.emitAiRunEvent(JSON.stringify({ status: 'completed', post_ids: ['p1'] }));
     });
@@ -107,14 +106,14 @@ describe('useAiRunProgress', () => {
     expect(source.isClosed).toBe(true);
     expect(onCompleted).toHaveBeenCalledOnce();
 
-    // 外部から aiRunId を null に変更（旧コードではここでidle上書き）
+    // 別スレッドへ移動: searchRunId=undefined → aiRunId=null
     rerender({ aiRunId: null });
 
-    // completed が維持される（idle に上書きされない）
-    expect(result.current.status).toBe('completed');
+    // idle に戻る（前スレッドの completed は残らない）
+    expect(result.current.status).toBe('idle');
   });
 
-  test('高1回帰: failed後にaiRunIdがnullに変わってもidle上書きされない', () => {
+  test('高1回帰: failed後にaiRunIdがnullに変わるとidleに戻る', () => {
     const onCompleted = vi.fn();
     const { result, rerender } = renderHook(
       ({ aiRunId }) => useAiRunProgress(aiRunId, API_BASE, onCompleted),
@@ -128,11 +127,26 @@ describe('useAiRunProgress', () => {
     });
 
     expect(result.current.status).toBe('failed');
-    expect(result.current.errorCode).toBe('AI_PROVIDER_TIMEOUT');
 
     rerender({ aiRunId: null });
 
-    expect(result.current.status).toBe('failed');
+    expect(result.current.status).toBe('idle');
+  });
+
+  test('高1回帰: 同一スレッド内ではcompleted表示は残る（aiRunIdが変わらない限り）', () => {
+    const onCompleted = vi.fn();
+    const { result } = renderHook(
+      () => useAiRunProgress('run-1b', API_BASE, onCompleted),
+    );
+
+    const source = MockEventSource.latest()!;
+
+    act(() => {
+      source.emitAiRunEvent(JSON.stringify({ status: 'completed', post_ids: ['p1'] }));
+    });
+
+    // aiRunIdが変わらない→completed表示は残る
+    expect(result.current.status).toBe('completed');
   });
 
   test('高2回帰: onerror→onopen後にlastRunStatusへ復元される', () => {
