@@ -40,6 +40,10 @@ jobs:
           name: typecheck-log
           path: typecheck.log
       - run: pnpm exec turbo build --output-logs=errors-only
+      - name: Test
+        run: pnpm exec turbo test --output-logs=errors-only
+      - name: Integration test
+        run: pnpm exec turbo test:integration --output-logs=errors-only
       - run: node --check scripts/probe-flue-stream.mjs
       - name: AI route guards
         run: |
