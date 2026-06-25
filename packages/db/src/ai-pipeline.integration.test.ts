@@ -605,3 +605,56 @@ describe('terminal 後の post/link/event 不変', () => {
     expect(eventsAfter).toBe(eventsBefore);
   });
 });
+
+describe('completeRunAtomic — cross-thread corrupted run', () => {
+  test('source_post_id が thread_id に属さない run では post/link が作られない', async () => {
+    // 2つの thread を用意
+    await seedThread('thread-x');
+    await seedThread('thread-y');
+    await seedHumanPost('post-in-y', 'thread-y', 1);
+
+    // 直接 SQL で壊れた run を作る（source は thread-y、run の thread_id は thread-x）
+    await database
+      .prepare(
+        [
+          "INSERT INTO ai_runs (id, thread_id, source_post_id, idempotency_key,",
+          "stage, status, model, prompt_version)",
+          "VALUES (?, ?, ?, ?, 'initial', 'generating', 'model', 'v1')",
+        ].join(' '),
+      )
+      .bind('run-corrupt', 'thread-x', 'post-in-y', 'idem-corrupt')
+      .run();
+
+    // 壊れた run の generating event を作る
+    await database
+      .prepare(
+        "INSERT INTO ai_run_events (id, ai_run_id, sequence, event_type, data_json) VALUES (?, ?, 1, 'status', ?)",
+      )
+      .bind('ev-corrupt', 'run-corrupt', JSON.stringify({ status: 'generating' }))
+      .run();
+
+    // completeRunAtomic: WHERE EXISTS の source/thread 検証で post/link は 0 行
+    // → InvalidTransitionError（run は generating のままだが、post/link が入らないため）
+    const postsBefore = await database
+      .prepare('SELECT COUNT(*) as cnt FROM posts WHERE thread_id = ?')
+      .bind('thread-x')
+      .first<{ cnt: number }>();
+
+    await expect(
+      completeRunAtomic({
+        db: database,
+        aiRunId: 'run-corrupt',
+        resultHash: 'hash-corrupt',
+        completedEventId: 'ev-c-corrupt',
+        replies: [{ postId: 'ai-corrupt-1', body: 'should not exist' }],
+      }),
+    ).rejects.toThrow();
+
+    // post が thread-x に増えていないことを確認
+    const postsAfter = await database
+      .prepare('SELECT COUNT(*) as cnt FROM posts WHERE thread_id = ?')
+      .bind('thread-x')
+      .first<{ cnt: number }>();
+    expect(postsAfter!.cnt).toBe(postsBefore!.cnt);
+  });
+});
