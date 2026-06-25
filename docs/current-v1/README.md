@@ -29,8 +29,10 @@ scripts/
   ci.yml -> docs/current-v1/repository/build-and-ci.md
 
 repository横断:
-  runtime flow        -> docs/current-v1/repository/runtime-flows.md
-  env / bindings      -> docs/current-v1/repository/environment-and-bindings.md
+  source map           -> docs/current-v1/repository/source-map.md
+  runtime flow         -> docs/current-v1/repository/runtime-flows.md
+  AI answer context    -> docs/current-v1/repository/ai-answer-context.md
+  env / bindings       -> docs/current-v1/repository/environment-and-bindings.md
   code inconsistencies -> docs/current-v1/repository/known-inconsistencies.md
 ```
 
@@ -98,6 +100,7 @@ Web POST server function
 - 現在のHTTP/UI挙動: `apps/*.md`
 - current D1 schema/query: `packages/db.md`
 - Worker間の実際の順序: `repository/runtime-flows.md`
+- modelへ渡る現在のcontext: `repository/ai-answer-context.md`
 - 意図しない差異・dead path: `repository/known-inconsistencies.md`
 - 移行後の判断: `docs/adr/**`
 
