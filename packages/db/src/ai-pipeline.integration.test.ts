@@ -475,3 +475,133 @@ describe('getAiGenerationContext', () => {
     }
   });
 });
+
+describe('cross-thread source post rejection', () => {
+  test('別 thread の post を source にした run は作れない', async () => {
+    await seedThread('thread-a');
+    await seedThread('thread-b');
+    await seedHumanPost('post-in-b', 'thread-b', 1);
+
+    // thread-a の run に thread-b の post を source にする → エラー
+    await expect(
+      createQueuedRun({
+        db: database,
+        id: 'run-cross',
+        threadId: 'thread-a',
+        sourcePostId: 'post-in-b', // thread-b に属する
+        idempotencyKey: 'idem-cross',
+        stage: 'initial',
+        model: 'sakura-ai/gpt-oss-120b',
+        promptVersion: 'initial-v1',
+        queuedEventId: 'ev-q-cross',
+      }),
+    ).rejects.toThrow("does not belong to thread");
+
+    // run も event も作られていないことを確認
+    const run = await getAiRunById(database, 'run-cross');
+    expect(run).toBeNull();
+
+    const events = await listAiRunEventsAfter(database, 'run-cross', 0);
+    expect(events).toHaveLength(0);
+  });
+});
+
+describe('terminal 後の post/link/event 不変', () => {
+  test('completed run への completeRunAtomic は post/link を増やさない', async () => {
+    const run = await seedQueuedRun('term-post');
+    await markRunAdmitted({ db: database, aiRunId: run.id, eventId: 'ev-a-tp' });
+    await markRunGenerating({
+      db: database,
+      aiRunId: run.id,
+      eventId: 'ev-g-tp',
+      flueRunId: null,
+    });
+
+    // 1回目: 成功
+    await completeRunAtomic({
+      db: database,
+      aiRunId: run.id,
+      resultHash: 'hash-term',
+      completedEventId: 'ev-c-tp1',
+      replies: [{ postId: 'ai-term-1', body: 'reply' }],
+    });
+
+    const postsBefore = await database
+      .prepare('SELECT COUNT(*) as cnt FROM posts WHERE thread_id = ?')
+      .bind('thread-term-post')
+      .first<{ cnt: number }>();
+    const linksBefore = await database
+      .prepare('SELECT COUNT(*) as cnt FROM ai_run_posts WHERE ai_run_id = ?')
+      .bind(run.id)
+      .first<{ cnt: number }>();
+    const eventsBefore = await countEvents(run.id);
+
+    // 2回目: same hash → duplicate（post/link/event は増えない）
+    const dup = await completeRunAtomic({
+      db: database,
+      aiRunId: run.id,
+      resultHash: 'hash-term',
+      completedEventId: 'ev-c-tp2',
+      replies: [{ postId: 'ai-term-2', body: 'should not be inserted' }],
+    });
+    expect(dup.duplicate).toBe(true);
+
+    const postsAfter = await database
+      .prepare('SELECT COUNT(*) as cnt FROM posts WHERE thread_id = ?')
+      .bind('thread-term-post')
+      .first<{ cnt: number }>();
+    const linksAfter = await database
+      .prepare('SELECT COUNT(*) as cnt FROM ai_run_posts WHERE ai_run_id = ?')
+      .bind(run.id)
+      .first<{ cnt: number }>();
+    const eventsAfter = await countEvents(run.id);
+
+    expect(postsAfter!.cnt).toBe(postsBefore!.cnt);
+    expect(linksAfter!.cnt).toBe(linksBefore!.cnt);
+    expect(eventsAfter).toBe(eventsBefore);
+  });
+
+  test('failed run への completeRunAtomic は post/link を増やさない', async () => {
+    const run = await seedQueuedRun('term-fail');
+    await markRunAdmitted({ db: database, aiRunId: run.id, eventId: 'ev-a-tf' });
+    await markRunGenerating({
+      db: database,
+      aiRunId: run.id,
+      eventId: 'ev-g-tf',
+      flueRunId: null,
+    });
+    await failRun({
+      db: database,
+      aiRunId: run.id,
+      eventId: 'ev-f-tf',
+      errorCode: 'AI_PROVIDER_TIMEOUT',
+      errorMessage: 'timeout',
+    });
+
+    const postsBefore = await database
+      .prepare('SELECT COUNT(*) as cnt FROM posts WHERE thread_id = ?')
+      .bind('thread-term-fail')
+      .first<{ cnt: number }>();
+    const eventsBefore = await countEvents(run.id);
+
+    // failed run への complete → InvalidTransitionError
+    await expect(
+      completeRunAtomic({
+        db: database,
+        aiRunId: run.id,
+        resultHash: 'hash-fail',
+        completedEventId: 'ev-c-tf',
+        replies: [{ postId: 'ai-tf-1', body: 'should not be inserted' }],
+      }),
+    ).rejects.toThrow(InvalidTransitionError);
+
+    const postsAfter = await database
+      .prepare('SELECT COUNT(*) as cnt FROM posts WHERE thread_id = ?')
+      .bind('thread-term-fail')
+      .first<{ cnt: number }>();
+    const eventsAfter = await countEvents(run.id);
+
+    expect(postsAfter!.cnt).toBe(postsBefore!.cnt);
+    expect(eventsAfter).toBe(eventsBefore);
+  });
+});

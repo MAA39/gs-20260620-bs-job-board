@@ -93,13 +93,15 @@ export const createQueuedRun = async <
   const results = await withConflictMapping(
     () =>
       input.db.batch([
+        // ADR-004: source post が thread に属することを SQL で検証
         input.db
           .prepare(
             [
               'INSERT INTO ai_runs',
               '(id, thread_id, source_post_id, idempotency_key,',
               'stage, status, model, prompt_version)',
-              'VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+              'SELECT ?, ?, ?, ?, ?, ?, ?, ?',
+              'WHERE EXISTS (SELECT 1 FROM posts WHERE id = ? AND thread_id = ?)',
             ].join(' '),
           )
           .bind(
@@ -111,13 +113,17 @@ export const createQueuedRun = async <
             'queued',
             input.model,
             input.promptVersion,
+            input.sourcePostId,
+            input.threadId,
           ),
+        // queued event: run 作成成功時のみ
         input.db
           .prepare(
             [
               'INSERT INTO ai_run_events',
               '(id, ai_run_id, sequence, event_type, data_json)',
-              'VALUES (?, ?, 1, ?, ?)',
+              'SELECT ?, ?, 1, ?, ?',
+              'WHERE changes() > 0',
             ].join(' '),
           )
           .bind(
@@ -131,7 +137,13 @@ export const createQueuedRun = async <
     'ai_run idempotency key conflicts with an existing run',
   );
 
-  return firstBatchRow<AiRunRow>(results[2], 'queued ai run');
+  const run = results[2]?.results?.[0] as AiRunRow | undefined;
+  if (run === undefined) {
+    throw new Error(
+      `source post '${input.sourcePostId}' does not belong to thread '${input.threadId}'`,
+    );
+  }
+  return run;
 };
 
 // ── Read operations ─────────────────────────────────────
@@ -400,7 +412,8 @@ export const completeRunAtomic = async <
 
   const postIds = input.replies.map((reply) => reply.postId);
 
-  // posts INSERT: V1 カラム構成 + ADR-004 dual-write
+  // posts INSERT: WHERE EXISTS で run が generating|repairing であることを保証
+  // terminal 化後の post 孤立を防ぐ (blocking review #1)
   const insertPostStatements = input.replies.map((reply) =>
     input.db
       .prepare(
@@ -408,13 +421,12 @@ export const completeRunAtomic = async <
           'INSERT INTO posts',
           '(id, thread_id, post_number, author_type, author_name,',
           'role, body, source_post_number, parent_post_id, user_id)',
-          'VALUES (?, ?,',
+          'SELECT ?, ?,',
           '(SELECT COALESCE(MAX(post_number), 0) + 1 FROM posts WHERE thread_id = ?),',
-          // ADR-004: 固定値。caller から受け取らない
           "'ai', '名無しさん', NULL, ?,",
-          // dual-write: source_post_number は SQL サブクエリで導出
           '(SELECT post_number FROM posts WHERE id = ?),',
-          '?, NULL)',
+          '?, NULL',
+          "WHERE EXISTS (SELECT 1 FROM ai_runs WHERE id = ? AND status IN ('generating', 'repairing'))",
         ].join(' '),
       )
       .bind(
@@ -422,22 +434,27 @@ export const completeRunAtomic = async <
         run.thread_id,
         run.thread_id,
         reply.body,
-        run.source_post_id, // source_post_number 導出用
-        run.source_post_id, // parent_post_id
+        run.source_post_id,
+        run.source_post_id,
+        input.aiRunId,
       ),
   );
 
   const linkStatements = input.replies.map((reply, index) =>
     input.db
       .prepare(
-        'INSERT INTO ai_run_posts (ai_run_id, post_id, ordinal) VALUES (?, ?, ?)',
+        [
+          'INSERT INTO ai_run_posts (ai_run_id, post_id, ordinal)',
+          'SELECT ?, ?, ?',
+          "WHERE EXISTS (SELECT 1 FROM ai_runs WHERE id = ? AND status IN ('generating', 'repairing'))",
+        ].join(' '),
       )
-      .bind(input.aiRunId, reply.postId, index),
+      .bind(input.aiRunId, reply.postId, index, input.aiRunId),
   );
 
   const usage: CompleteRunUsageInput = input.usage ?? {};
 
-  await withConflictMapping(
+  const batchResults = await withConflictMapping(
     () =>
       input.db.batch([
         ...insertPostStatements,
@@ -485,9 +502,21 @@ export const completeRunAtomic = async <
             'completed',
             jsonData({ status: 'completed', post_ids: postIds }),
           ),
+        // batch 末尾: 最終 run 状態を確認
+        input.db.prepare(selectAiRunByIdSql).bind(input.aiRunId),
       ]),
     'ai_run completion conflicts with existing data',
   );
+
+  // 最終検証: run が completed かつ result_hash 一致を確認
+  const finalIdx = insertPostStatements.length + linkStatements.length + 2;
+  const finalRun = batchResults[finalIdx]?.results?.[0] as AiRunRow | undefined;
+  if (finalRun === undefined || finalRun.status !== 'completed') {
+    throw new InvalidTransitionError(input.aiRunId, 'completed');
+  }
+  if (finalRun.result_hash !== input.resultHash) {
+    throw new DbConflictError('completed ai_run result hash conflict');
+  }
 
   return { aiRunId: input.aiRunId, postIds, duplicate: false };
 };
