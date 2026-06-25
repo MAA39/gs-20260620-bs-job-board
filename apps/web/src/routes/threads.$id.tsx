@@ -1,8 +1,8 @@
-import { createFileRoute, Link } from '@tanstack/react-router';
+import { createFileRoute, Link, useNavigate } from '@tanstack/react-router';
 import { authClient } from '../lib/auth-client';
 import { createServerFn } from '@tanstack/react-start';
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import type { ThreadDetail, Post } from '@bs-job-board/contracts';
+import type { ThreadDetail, Post, CreatePostResponse } from '@bs-job-board/contracts';
 import { useAiRunProgress, getProgressLabel } from '../lib/use-ai-run-progress';
 
 async function getApi() {
@@ -32,7 +32,7 @@ const addComment = createServerFn({ method: 'POST' }).validator((i: { threadId: 
     const api = await getApi();
     const r = await api(`/api/v1/threads/${data.threadId}/posts`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ body: data.body }) });
     if (!r.ok) throw new Error(`post failed: ${r.status}`);
-    return (await r.json()) as { id: string; post_number: number; ai_run: { id: string } };
+    return (await r.json()) as CreatePostResponse;
   });
 
 const fixThread = createServerFn({ method: 'POST' }).validator((i: { threadId: string; status: string }) => i)
@@ -57,14 +57,20 @@ export const Route = createFileRoute('/threads/$id')({
 function ThreadDetailPage() {
   const { detail: initial, apiBaseUrl } = Route.useLoaderData();
   const params = Route.useParams();
-  const { run: initialRunId } = Route.useSearch();
+  const { run: searchRunId } = Route.useSearch();
+  const navigate = useNavigate();
   const [thread, setThread] = useState(initial);
   const [comment, setComment] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
-  const [aiRunId, setAiRunId] = useState<string | null>(initialRunId ?? null);
+  const [aiRunId, setAiRunId] = useState<string | null>(searchRunId ?? null);
 
   useEffect(() => { setThread(initial); }, [initial]);
+
+  // search.run 変更時に tracked run を同期
+  useEffect(() => {
+    if (searchRunId) setAiRunId(searchRunId);
+  }, [searchRunId]);
 
   // ── SSE 進捗 ──────────────────────────────────────────
   const refreshThread = useCallback(async () => {
@@ -73,12 +79,8 @@ function ThreadDetailPage() {
 
   const progress = useAiRunProgress(aiRunId, apiBaseUrl, refreshThread);
 
-  // SSE 完了後は aiRunId をクリア（再接続を止める）
-  useEffect(() => {
-    if (progress.status === 'completed' || progress.status === 'failed') {
-      setAiRunId(null);
-    }
-  }, [progress.status]);
+  // terminal 表示消失バグ修正: aiRunId を null に戻す useEffect は削除済み。
+  // hook は内部で source.close() 済み。aiRunId を保持しても再接続しない。
 
   // ── 5秒ポーリング（他ユーザーの投稿を拾う） ─────────
   useEffect(() => {
@@ -97,14 +99,21 @@ function ThreadDetailPage() {
     try {
       const result = await addComment({ data: { threadId: params.id, body: comment.trim() } });
       setComment('');
-      // ai_run.id → SSE 接続開始
-      setAiRunId(result.ai_run.id);
+      // 新しい ai_run.id → SSE 接続開始 + URL search を replace で反映
+      const newRunId = result.ai_run.id;
+      setAiRunId(newRunId);
+      navigate({
+        to: '/threads/$id',
+        params: { id: params.id },
+        search: { run: newRunId },
+        replace: true,
+      });
       const fresh = await fetchDetail({ data: { id: params.id } });
       setThread(fresh);
     } catch (err) {
       setError(err instanceof Error ? err.message : '投稿に失敗しました');
     } finally { setSubmitting(false); }
-  }, [comment, params.id, isAuth]);
+  }, [comment, params.id, isAuth, navigate]);
 
   const handleAnonAuth = useCallback(async () => {
     try {
@@ -130,7 +139,6 @@ function ThreadDetailPage() {
     setThread(await fetchDetail({ data: { id: params.id } }));
   }, [thread.status, params.id]);
 
-  // post_number順に統合表示。人間postの直後に紐づくAIをぶら下げる
   const displayItems = useMemo(() => {
     const posts = [...thread.posts].sort((a, b) => a.post_number - b.post_number);
     const grouped = new Set<string>();
@@ -183,7 +191,6 @@ function ThreadDetailPage() {
         </div>
       </div>
 
-      {/* AI進捗バー */}
       {progressLabel && (
         <div className="card" style={{
           marginTop: '8px',

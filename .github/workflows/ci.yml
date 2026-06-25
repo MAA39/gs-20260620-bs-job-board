@@ -66,3 +66,7 @@ jobs:
           # Removed in #24: ai-stream and reasoning_content must not re-appear
           test -z "$(grep -R 'ai-stream' apps/web/src/ || true)"
           test -z "$(grep -R 'reasoning_content' apps/web/src/ || true)"
+      - name: Terminal display guard
+        run: |
+          # PR A hotfix: setAiRunId(null) on terminal causes idle overwrite
+          test -z "$(grep -E 'setAiRunId\(null\)' apps/web/src/routes/threads.\$id.tsx || true)"

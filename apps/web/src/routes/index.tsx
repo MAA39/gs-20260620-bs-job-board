@@ -3,6 +3,7 @@ import { authClient } from '../lib/auth-client';
 import { createServerFn } from '@tanstack/react-start';
 import { useState, useEffect, useCallback } from 'react';
 import type { Thread } from '@bs-job-board/contracts';
+import type { CreateThreadResponse } from '@bs-job-board/contracts';
 
 type ThreadWithReactions = Thread & { reaction_count: number };
 
@@ -27,7 +28,7 @@ const createThreadAction = createServerFn({ method: 'POST' })
   .validator((input: { title: string; body: string }) => input)
   .handler(async ({ data }) => {
     const api = await getApi();
-    return (await (await api('/api/v1/threads', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) })).json()) as { id: string; ai_run: { id: string } };
+    return (await (await api('/api/v1/threads', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) })).json()) as CreateThreadResponse;
   });
 
 const reactAction = createServerFn({ method: 'POST' })
