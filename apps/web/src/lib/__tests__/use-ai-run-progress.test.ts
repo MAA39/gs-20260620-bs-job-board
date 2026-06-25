@@ -258,3 +258,120 @@ describe('useAiRunProgress', () => {
     expect(source.isClosed).toBe(true);
   });
 });
+
+// ── B3: stale frame paint probe ─────────────────────────
+
+import React, { useLayoutEffect } from 'react';
+import { render } from '@testing-library/react';
+
+function ProgressPaintProbe(props: {
+  runId: string | null;
+  onPaint: (status: string) => void;
+}) {
+  const progress = useAiRunProgress(props.runId, 'http://test-api', vi.fn());
+  useLayoutEffect(() => {
+    props.onPaint(progress.status);
+  });
+  return React.createElement('span', null, progress.status);
+}
+
+describe('stale frame paint', () => {
+  test('run変更時に前runのterminal状態を1frameも描画しない', () => {
+    const paints: string[] = [];
+    const { rerender } = render(
+      React.createElement(ProgressPaintProbe, {
+        runId: 'run-paint-1',
+        onPaint: (s: string) => paints.push(s),
+      }),
+    );
+
+    act(() => {
+      MockEventSource.latest()!.emitAiRunEvent(
+        JSON.stringify({ status: 'completed', post_ids: ['post-1'] }),
+      );
+    });
+
+    const start = paints.length;
+
+    rerender(
+      React.createElement(ProgressPaintProbe, {
+        runId: 'run-paint-2',
+        onPaint: (s: string) => paints.push(s),
+      }),
+    );
+
+    const newRunPaints = paints.slice(start);
+    expect(newRunPaints[0]).toBe('connecting');
+    expect(newRunPaints).not.toContain('completed');
+  });
+
+  test('runId=null最初のcommitがidleで、failedが描画されない', () => {
+    const paints: string[] = [];
+    const { rerender } = render(
+      React.createElement(ProgressPaintProbe, {
+        runId: 'run-paint-3',
+        onPaint: (s: string) => paints.push(s),
+      }),
+    );
+
+    act(() => {
+      MockEventSource.latest()!.emitAiRunEvent(
+        JSON.stringify({ status: 'failed', error_code: 'AI_RUN_FAILED' }),
+      );
+    });
+
+    const start = paints.length;
+
+    rerender(
+      React.createElement(ProgressPaintProbe, {
+        runId: null,
+        onPaint: (s: string) => paints.push(s),
+      }),
+    );
+
+    const nullRunPaints = paints.slice(start);
+    expect(nullRunPaints[0]).toBe('idle');
+    expect(nullRunPaints).not.toContain('failed');
+  });
+
+  test('reconnect 中に投稿 API は再実行されない (onCompleted は completed 時のみ)', () => {
+    const onCompleted = vi.fn();
+    const { result } = renderHook(
+      () => useAiRunProgress('run-recon', 'http://test-api', onCompleted),
+    );
+
+    const source = MockEventSource.latest()!;
+
+    // generating → 切断 → 再接続 → generating → completed
+    act(() => { source.emitAiRunEvent(JSON.stringify({ status: 'generating' })); });
+    act(() => { source.simulateError(); });
+    act(() => { source.simulateReconnect(); });
+    act(() => { source.emitAiRunEvent(JSON.stringify({ status: 'generating' })); });
+    act(() => { source.emitAiRunEvent(JSON.stringify({ status: 'completed', post_ids: ['p1'] })); });
+
+    expect(onCompleted).toHaveBeenCalledOnce();
+    expect(result.current.status).toBe('completed');
+  });
+
+  test('全status遷移: queued→admitted→generating→repairing→completed', () => {
+    const onCompleted = vi.fn();
+    const { result } = renderHook(
+      () => useAiRunProgress('run-all', 'http://test-api', onCompleted),
+    );
+
+    const source = MockEventSource.latest()!;
+    const statuses = ['queued', 'admitted', 'generating', 'repairing'] as const;
+
+    for (const s of statuses) {
+      act(() => { source.emitAiRunEvent(JSON.stringify({ status: s })); });
+      expect(result.current.status).toBe(s);
+    }
+
+    act(() => {
+      source.emitAiRunEvent(JSON.stringify({ status: 'completed', post_ids: ['p1', 'p2'] }));
+    });
+    expect(result.current.status).toBe('completed');
+    expect(result.current.postIds).toEqual(['p1', 'p2']);
+    expect(onCompleted).toHaveBeenCalledOnce();
+  });
+});
