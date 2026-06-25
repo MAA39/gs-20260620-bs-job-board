@@ -3,15 +3,26 @@ import { authClient } from '../lib/auth-client';
 import { createServerFn } from '@tanstack/react-start';
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import type { ThreadDetail, Post } from '@bs-job-board/contracts';
+import { useAiRunProgress, getProgressLabel } from '../lib/use-ai-run-progress';
 
 async function getApi() {
   try {
-    const { env } = (await import('cloudflare:workers')) as unknown as { env: { API: { fetch: typeof fetch } } };
+    const { env } = (await import('cloudflare:workers')) as unknown as { env: { API: { fetch: typeof fetch }; API_BASE_URL?: string } };
     return (url: string, init?: RequestInit) => env.API.fetch(`https://api${url}`, init);
   } catch {
     return (url: string, init?: RequestInit) => fetch(`http://localhost:8787${url}`, init);
   }
 }
+
+const resolveApiBaseUrl = createServerFn({ method: 'GET' })
+  .handler(async () => {
+    try {
+      const { env } = (await import('cloudflare:workers')) as unknown as { env: { API_BASE_URL?: string } };
+      return env.API_BASE_URL || 'http://localhost:8787';
+    } catch {
+      return 'http://localhost:8787';
+    }
+  });
 
 const fetchDetail = createServerFn({ method: 'GET' }).validator((i: { id: string }) => i)
   .handler(async ({ data }) => { const api = await getApi(); const r = await api(`/api/v1/threads/${data.id}`); if (!r.ok) throw new Error('not found'); return (await r.json()) as ThreadDetail; });
@@ -27,21 +38,53 @@ const addComment = createServerFn({ method: 'POST' }).validator((i: { threadId: 
 const fixThread = createServerFn({ method: 'POST' }).validator((i: { threadId: string; status: string }) => i)
   .handler(async ({ data }) => { const api = await getApi(); await api(`/api/v1/threads/${data.threadId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: data.status }) }); });
 
-export const Route = createFileRoute('/threads/$id')({ loader: ({ params }) => fetchDetail({ data: { id: params.id } }), component: ThreadDetailPage });
+type SearchParams = { run?: string };
+
+export const Route = createFileRoute('/threads/$id')({
+  validateSearch: (s: Record<string, unknown>): SearchParams => ({
+    run: typeof s.run === 'string' ? s.run : undefined,
+  }),
+  loader: async ({ params }) => {
+    const [detail, apiBaseUrl] = await Promise.all([
+      fetchDetail({ data: { id: params.id } }),
+      resolveApiBaseUrl(),
+    ]);
+    return { detail, apiBaseUrl };
+  },
+  component: ThreadDetailPage,
+});
 
 function ThreadDetailPage() {
-  const initial = Route.useLoaderData();
+  const { detail: initial, apiBaseUrl } = Route.useLoaderData();
   const params = Route.useParams();
+  const { run: initialRunId } = Route.useSearch();
   const [thread, setThread] = useState(initial);
   const [comment, setComment] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
+  const [aiRunId, setAiRunId] = useState<string | null>(initialRunId ?? null);
 
   useEffect(() => { setThread(initial); }, [initial]);
-  useEffect(() => {
-    const p = setInterval(async () => { try { setThread(await fetchDetail({ data: { id: params.id } })); } catch {} }, 5000);
-    return () => clearInterval(p);
+
+  // ── SSE 進捗 ──────────────────────────────────────────
+  const refreshThread = useCallback(async () => {
+    try { setThread(await fetchDetail({ data: { id: params.id } })); } catch { /* noop */ }
   }, [params.id]);
+
+  const progress = useAiRunProgress(aiRunId, apiBaseUrl, refreshThread);
+
+  // SSE 完了後は aiRunId をクリア（再接続を止める）
+  useEffect(() => {
+    if (progress.status === 'completed' || progress.status === 'failed') {
+      setAiRunId(null);
+    }
+  }, [progress.status]);
+
+  // ── 5秒ポーリング（他ユーザーの投稿を拾う） ─────────
+  useEffect(() => {
+    const p = setInterval(refreshThread, 5000);
+    return () => clearInterval(p);
+  }, [refreshThread]);
 
   const [showAuthModal, setShowAuthModal] = useState(false);
 
@@ -54,8 +97,8 @@ function ThreadDetailPage() {
     try {
       const result = await addComment({ data: { threadId: params.id, body: comment.trim() } });
       setComment('');
-      // ai_run.id is available in result for future SSE (#12)
-      void result;
+      // ai_run.id → SSE 接続開始
+      setAiRunId(result.ai_run.id);
       const fresh = await fetchDetail({ data: { id: params.id } });
       setThread(fresh);
     } catch (err) {
@@ -122,6 +165,8 @@ function ThreadDetailPage() {
     return items;
   }, [thread.posts]);
 
+  const progressLabel = getProgressLabel(progress);
+
   return (
     <div>
       <Link to="/" search={{ sort: 'new' }} style={{ color: '#555041', textDecoration: 'none', fontSize: '0.9rem' }}>← 一覧に戻る</Link>
@@ -137,6 +182,22 @@ function ThreadDetailPage() {
           </button>
         </div>
       </div>
+
+      {/* AI進捗バー */}
+      {progressLabel && (
+        <div className="card" style={{
+          marginTop: '8px',
+          background: progress.status === 'failed' ? '#fff0f0' : '#f0f5ff',
+          borderLeft: `3px solid ${progress.status === 'failed' ? '#c00' : '#4a90d9'}`,
+          padding: '8px 12px',
+          fontSize: '0.85rem',
+        }}>
+          <span style={{ marginRight: '8px' }}>
+            {progress.status === 'generating' || progress.status === 'repairing' ? '🤖' : progress.status === 'failed' ? '⚠️' : progress.status === 'completed' ? '✅' : '⏳'}
+          </span>
+          {progressLabel}
+        </div>
+      )}
 
       <div className="section-header">
         <span>Posts</span>

@@ -97,7 +97,7 @@ function HomePage() {
     try {
         const result = await createThreadAction({ data: { title: title.trim(), body: body.trim() } });
         setTitle(''); setBody('');
-        navigate({ to: '/threads/$id', params: { id: result.id } });
+        navigate({ to: '/threads/$id', params: { id: result.id }, search: { run: result.ai_run.id } });
       }
     finally { setSubmitting(false); }
   }, [title, body, sort]);
@@ -111,7 +111,7 @@ function HomePage() {
       try {
         const result = await createThreadAction({ data: { title: title.trim(), body: body.trim() } });
         setTitle(''); setBody('');
-        navigate({ to: '/threads/$id', params: { id: result.id } });
+        navigate({ to: '/threads/$id', params: { id: result.id }, search: { run: result.ai_run.id } });
       }
       finally { setSubmitting(false); }
     }

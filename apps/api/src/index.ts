@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { threadRoutes } from './routes/threads.ts';
 import { internalCallbackRoutes } from './routes/internal-callbacks.ts';
+import { aiRunEventRoutes } from './routes/ai-run-events.ts';
 import { createAuth } from './auth.ts';
 
 type Bindings = {
@@ -21,6 +22,7 @@ app.use('*', cors({
 }));
 app.get('/health', (c) => c.json({ status: 'ok' }));
 app.route('/api/v1/threads', threadRoutes);
+app.route('/api/v1/ai-runs', aiRunEventRoutes);
 app.route('/internal/v1/ai-runs', internalCallbackRoutes);
 
 app.on(['POST', 'GET'], '/api/auth/**', async (c) => {
