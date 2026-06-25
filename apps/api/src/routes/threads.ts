@@ -13,6 +13,7 @@ import {
   markRunAdmitted,
   failRun,
   getAiRunById,
+  getAiGenerationContext,
 } from '@bs-job-board/db/ai-pipeline';
 import { getSessionUser } from '../auth.ts';
 
@@ -26,6 +27,7 @@ const PROMPT_VERSION = 'initial-v1';
 type Bindings = {
   DB: D1Database;
   BETTER_AUTH_SECRET: string;
+  INTERNAL_CALLBACK_KEY: string;
   AGENT: { fetch: typeof fetch };
 };
 
@@ -57,11 +59,8 @@ type WaitUntilCapable = { waitUntil: (promise: Promise<unknown>) => void };
 async function dispatchWithRunLifecycle(
   agent: { fetch: typeof fetch },
   db: D1Database,
+  callbackKey: string,
   aiRunId: string,
-  threadId: string,
-  threadTitle: string,
-  targetBody: string,
-  targetPostNumber: number,
 ): Promise<void> {
   // admitted 遷移
   await markRunAdmitted({
@@ -70,17 +69,47 @@ async function dispatchWithRunLifecycle(
     eventId: crypto.randomUUID(),
   });
 
+  // generation context 組み立て（ADR-004: API が context を構築する）
+  const ctx = await getAiGenerationContext(
+    db as unknown as Parameters<typeof getAiGenerationContext>[0],
+    aiRunId,
+  );
+  if (!ctx) {
+    await failRun({
+      db: db as unknown as Parameters<typeof failRun>[0]['db'],
+      aiRunId,
+      eventId: crypto.randomUUID(),
+      errorCode: 'AI_DISPATCH_FAILED',
+      errorMessage: 'generation context not found',
+    }).catch(() => undefined);
+    return;
+  }
+
   try {
+    // Agent dispatch: context + callback key
     const response = await agent.fetch(
       new Request('http://agent/workflows/generate-replies', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          threadId,
-          threadTitle,
-          targetBody,
-          targetPostNumber,
-          aiRunId, // #11 で Agent 側が使う
+          aiRunId,
+          callbackKey,
+          context: {
+            thread: ctx.thread,
+            sourcePost: {
+              id: ctx.sourcePost.id,
+              postNumber: ctx.sourcePost.post_number,
+              body: ctx.sourcePost.body,
+            },
+            recentPosts: ctx.recentPosts.map((p) => ({
+              postNumber: p.post_number,
+              authorType: p.author_type,
+              body: p.body,
+            })),
+            replyCount: 3,
+            promptVersion: PROMPT_VERSION,
+            stage: ctx.aiRun.stage,
+          },
         }),
       }),
     );
@@ -93,7 +122,7 @@ async function dispatchWithRunLifecycle(
       await response.body?.cancel().catch(() => undefined);
     }
   } catch (error) {
-    // dispatch 失敗: completed でなければ安全に failed へ遷移
+    // dispatch 自体の失敗（ネットワーク等）: Agent callback が呼ばれていない
     const run = await getAiRunById(
       db as unknown as Parameters<typeof getAiRunById>[0],
       aiRunId,
@@ -177,11 +206,8 @@ export const threadRoutes = new Hono<{ Bindings: Bindings }>()
       dispatchWithRunLifecycle(
         context.env.AGENT,
         context.env.DB,
+        context.env.INTERNAL_CALLBACK_KEY,
         aiRunId,
-        threadId,
-        input.title,
-        input.body,
-        1, // initial post_number
       ).catch(logDispatchFailure),
     );
 
@@ -236,11 +262,8 @@ export const threadRoutes = new Hono<{ Bindings: Bindings }>()
         dispatchWithRunLifecycle(
           context.env.AGENT,
           context.env.DB,
+          context.env.INTERNAL_CALLBACK_KEY,
           aiRunId,
-          threadId,
-          threadTitle,
-          input.body,
-          postNumber,
         ).catch(logDispatchFailure),
       );
 
