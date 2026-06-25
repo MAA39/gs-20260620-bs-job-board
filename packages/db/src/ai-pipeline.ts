@@ -798,16 +798,18 @@ export const insertHumanPostWithQueuedRun = async <
             'status',
             jsonData({ status: 'queued' }),
           ),
-        // post_number 取得用
+        // post_number + thread title 取得用
         db
-          .prepare('SELECT post_number FROM posts WHERE id = ?')
+          .prepare(
+            'SELECT p.post_number, t.title FROM posts p JOIN threads t ON p.thread_id = t.id WHERE p.id = ?',
+          )
           .bind(post.id),
       ]),
     'ai_run idempotency key conflicts with an existing run',
   );
 
   const postRow = results[3]?.results?.[0] as
-    | { post_number: number }
+    | { post_number: number; title: string }
     | undefined;
   if (postRow === undefined) {
     throw new Error(
@@ -818,6 +820,7 @@ export const insertHumanPostWithQueuedRun = async <
   return {
     postId: post.id,
     postNumber: postRow.post_number,
+    threadTitle: postRow.title,
     aiRunId: aiRun.id,
   };
 };

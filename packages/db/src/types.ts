@@ -254,5 +254,6 @@ export type InsertHumanPostWithQueuedRunInput<
 export type InsertHumanPostWithQueuedRunResult = {
   postId: string;
   postNumber: number;
+  threadTitle: string;
   aiRunId: string;
 };

@@ -97,7 +97,7 @@ async function dispatchWithRunLifecycle(
     const run = await getAiRunById(
       db as unknown as Parameters<typeof getAiRunById>[0],
       aiRunId,
-    );
+    ).catch(() => null);
     if (run && run.status !== 'completed' && run.status !== 'failed') {
       await failRun({
         db: db as unknown as Parameters<typeof failRun>[0]['db'],
@@ -138,6 +138,17 @@ export const threadRoutes = new Hono<{ Bindings: Bindings }>()
   .post('/', async (context) => {
     const input = await context.req.json<{ title: string; body: string }>();
 
+    const sessionUser = await getSessionUser(
+      context.env.DB,
+      context.env.BETTER_AUTH_SECRET || '',
+      new URL(context.req.url).origin,
+      context.req.raw,
+    );
+    const authorName =
+      sessionUser?.name && sessionUser.name !== 'Anonymous'
+        ? sessionUser.name
+        : '名無しさん';
+
     const threadId = crypto.randomUUID();
     const postId = crypto.randomUUID();
     const aiRunId = crypto.randomUUID();
@@ -151,7 +162,7 @@ export const threadRoutes = new Hono<{ Bindings: Bindings }>()
     await createThreadWithInitialPostAndQueuedRun({
       db: context.env.DB as unknown as Parameters<typeof createThreadWithInitialPostAndQueuedRun>[0]['db'],
       thread: { id: threadId, title: input.title, body: input.body },
-      post: { id: postId, authorName: '名無しさん', userId: null },
+      post: { id: postId, authorName, userId: sessionUser?.id ?? null },
       aiRun: {
         id: aiRunId,
         idempotencyKey,
@@ -203,7 +214,7 @@ export const threadRoutes = new Hono<{ Bindings: Bindings }>()
         PROMPT_VERSION,
       );
 
-      const { postNumber } = await insertHumanPostWithQueuedRun({
+      const { postNumber, threadTitle } = await insertHumanPostWithQueuedRun({
         db: context.env.DB as unknown as Parameters<typeof insertHumanPostWithQueuedRun>[0]['db'],
         post: {
           id: postId,
@@ -221,25 +232,17 @@ export const threadRoutes = new Hono<{ Bindings: Bindings }>()
         queuedEventId: crypto.randomUUID(),
       });
 
-      // thread title を取得（dispatch 用）
-      const thread = await context.env.DB
-        .prepare('SELECT title FROM threads WHERE id = ?')
-        .bind(threadId)
-        .first<{ title: string }>();
-
-      if (thread) {
-        context.executionCtx.waitUntil(
-          dispatchWithRunLifecycle(
-            context.env.AGENT,
-            context.env.DB,
-            aiRunId,
-            threadId,
-            thread.title,
-            input.body,
-            postNumber,
-          ).catch(logDispatchFailure),
-        );
-      }
+      context.executionCtx.waitUntil(
+        dispatchWithRunLifecycle(
+          context.env.AGENT,
+          context.env.DB,
+          aiRunId,
+          threadId,
+          threadTitle,
+          input.body,
+          postNumber,
+        ).catch(logDispatchFailure),
+      );
 
       return context.json(
         { id: postId, post_number: postNumber, ai_run: { id: aiRunId } },
