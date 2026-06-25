@@ -79,7 +79,7 @@ function ThreadDetailPage() {
 
   const progress = useAiRunProgress(aiRunId, apiBaseUrl, refreshThread);
 
-  // terminal 表示消失バグ修正: setAiRunId(null) は行わない。
+  // terminal 表示消失バグ修正: aiRunId を null に戻す useEffect は削除済み。
   // hook は内部で source.close() 済み。aiRunId を保持しても再接続しない。
 
   // ── 5秒ポーリング（他ユーザーの投稿を拾う） ─────────
