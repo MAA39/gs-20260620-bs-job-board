@@ -3,7 +3,6 @@ export {
   listThreadsSorted,
   getThreadDetail,
   createThread,
-  addPost,
   updateThreadStatus,
   incrementReaction,
   toggleReaction,

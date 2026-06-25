@@ -3,7 +3,6 @@ import type { CreatePostInput } from '@bs-job-board/contracts';
 import {
   listThreadsSorted,
   getThreadDetail,
-  addPost,
   updateThreadStatus,
   toggleReaction,
 } from '@bs-job-board/db';
@@ -280,65 +279,49 @@ export const threadRoutes = new Hono<{ Bindings: Bindings }>()
     const authorName =
       sessionUser?.name && sessionUser.name !== 'Anonymous'
         ? sessionUser.name
-        : input.author_name;
+        : '名無しさん';
     const userId = sessionUser?.id ?? null;
 
-    if (input.author_type === 'human') {
-      // human 投稿: post + queued run を原子的に作成
-      const postId = crypto.randomUUID();
-      const aiRunId = crypto.randomUUID();
-      const idempotencyKey = await computeIdempotencyKey(
-        postId,
-        'deep_dive',
-        PROMPT_VERSION,
-      );
-
-      const { postNumber, threadTitle } = await insertHumanPostWithQueuedRun({
-        db: context.env.DB as unknown as Parameters<typeof insertHumanPostWithQueuedRun>[0]['db'],
-        post: {
-          id: postId,
-          threadId,
-          authorName,
-          body: input.body,
-          userId,
-        },
-        aiRun: {
-          id: aiRunId,
-          idempotencyKey,
-          model: AI_MODEL,
-          promptVersion: PROMPT_VERSION,
-        },
-        queuedEventId: crypto.randomUUID(),
-      });
-
-      context.executionCtx.waitUntil(
-        dispatchWithRunLifecycle(
-          context.env.AGENT,
-          context.env.DB,
-          context.env.INTERNAL_CALLBACK_KEY,
-          aiRunId,
-        ).catch(logDispatchFailure),
-      );
-
-      return context.json(
-        { id: postId, post_number: postNumber, ai_run: { id: aiRunId } },
-        201,
-      );
-    }
-
-    // AI 投稿（#11 で撤去予定: Agent callback に移行）
-    const enrichedInput = {
-      ...input,
-      user_id: userId,
-      author_name: authorName,
-    };
-    const { postId, postNumber } = await addPost(
-      context.env.DB,
-      threadId,
-      enrichedInput,
+    // ADR-004: 公開routeは常にhuman post。AI postはinternal callbackのみ
+    const postId = crypto.randomUUID();
+    const aiRunId = crypto.randomUUID();
+    const idempotencyKey = await computeIdempotencyKey(
+      postId,
+      'deep_dive',
+      PROMPT_VERSION,
     );
 
-    return context.json({ id: postId, post_number: postNumber }, 201);
+    const { postNumber } = await insertHumanPostWithQueuedRun({
+      db: context.env.DB as unknown as Parameters<typeof insertHumanPostWithQueuedRun>[0]['db'],
+      post: {
+        id: postId,
+        threadId,
+        authorName,
+        body: input.body,
+        userId,
+      },
+      aiRun: {
+        id: aiRunId,
+        idempotencyKey,
+        model: AI_MODEL,
+        promptVersion: PROMPT_VERSION,
+      },
+      queuedEventId: crypto.randomUUID(),
+    });
+
+    context.executionCtx.waitUntil(
+      dispatchWithRunLifecycle(
+        context.env.AGENT,
+        context.env.DB,
+        context.env.INTERNAL_CALLBACK_KEY,
+        aiRunId,
+      ).catch(logDispatchFailure),
+    );
+
+    return context.json(
+      { id: postId, post_number: postNumber, ai_run: { id: aiRunId } },
+      201,
+    );
   })
   .post('/:id/react', async (context) => {
     const threadId = context.req.param('id');

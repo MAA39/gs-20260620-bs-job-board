@@ -27,11 +27,7 @@ export type ThreadDetail = Thread & { posts: Post[] };
 
 export type CreateThreadInput = { title: string; body: string };
 
+/** Public API input — server-owned fields (author_type, role, etc.) are not accepted */
 export type CreatePostInput = {
-  author_type: AuthorType;
-  author_name: string;
-  role: PostRole;
   body: string;
-  source_post_number?: number | null;
-  user_id?: string | null;
 };
