@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import type { AiRunProgress, PublicAiRunEvent } from '@bs-job-board/contracts';
 
 // ── Public event parser ─────────────────────────────────
@@ -6,7 +6,8 @@ import type { AiRunProgress, PublicAiRunEvent } from '@bs-job-board/contracts';
 function parsePublicAiRunEvent(raw: string): PublicAiRunEvent | null {
   try {
     const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed.status !== 'string') return null;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    if (typeof parsed.status !== 'string') return null;
     return parsed as PublicAiRunEvent;
   } catch {
     return null;
@@ -35,12 +36,22 @@ export function useAiRunProgress(
   const onCompletedRef = useRef(onCompleted);
   onCompletedRef.current = onCompleted;
 
+  // 前 run の domain status を次 run の再接続時に復元しないよう、
+  // aiRunId 変更時に必ず reset する。
+  const lastRunStatusRef = useRef<AiRunProgress['status']>('connecting');
+
   useEffect(() => {
     if (!aiRunId) {
-      setProgress({ status: 'idle' });
+      // aiRunId が null なら idle。ただし terminal 状態を上書きしない。
+      setProgress((prev) => {
+        if (prev.status === 'completed' || prev.status === 'failed') return prev;
+        return { status: 'idle' };
+      });
       return;
     }
 
+    // run 変更時: ref を reset
+    lastRunStatusRef.current = 'connecting';
     setProgress({ status: 'connecting' });
 
     const url = `${apiBaseUrl}/api/v1/ai-runs/${encodeURIComponent(aiRunId)}/events?after=0`;
@@ -61,6 +72,7 @@ export function useAiRunProgress(
         setProgress({ status: 'failed', errorCode });
         source.close();
       } else {
+        lastRunStatusRef.current = parsed.status;
         setProgress({ status: parsed.status });
       }
     };
@@ -68,17 +80,17 @@ export function useAiRunProgress(
     source.addEventListener('ai-run', handleEvent);
 
     source.onerror = () => {
-      // EventSource は切断時に自動再接続する。
-      // readyState が CONNECTING なら再接続中。CLOSED ならもう戻らない。
       if (source.readyState === EventSource.CONNECTING) {
-        setProgress((prev) => ({ ...prev, status: 'reconnecting' }));
+        setProgress({ status: 'reconnecting' });
       }
     };
 
     source.onopen = () => {
-      // 再接続成功時、前回の status に戻す or connecting のまま
+      // 再接続成功時: 最後の domain status を復元
       setProgress((prev) =>
-        prev.status === 'reconnecting' ? { ...prev, status: prev.status } : prev,
+        prev.status === 'reconnecting'
+          ? { status: lastRunStatusRef.current }
+          : prev,
       );
     };
 

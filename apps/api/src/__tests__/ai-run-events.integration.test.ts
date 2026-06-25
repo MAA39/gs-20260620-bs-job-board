@@ -230,9 +230,8 @@ describe('GET /api/v1/ai-runs/:aiRunId/events', () => {
     const events = parseSSEEvents(text).filter(e => e.event === 'ai-run' && e.data);
 
     // Last-Event-ID=1 が優先されて seq 2 (completed) から
-    if (events.length > 0) {
-      expect(Number(events[0].id)).toBeGreaterThan(1);
-    }
+    expect(events.length).toBeGreaterThan(0);
+    expect(Number(events[0].id)).toBeGreaterThan(1);
   });
 
   test('event: ai-run — allow-list方式で公開データのみ', async () => {
@@ -255,16 +254,163 @@ describe('GET /api/v1/ai-runs/:aiRunId/events', () => {
   });
 
   test('SSE does not create or modify runs', async () => {
+    const beforeRun = await database
+      .prepare('SELECT status FROM ai_runs WHERE id = ?')
+      .bind(TEST_RUN_COMPLETED_ID)
+      .first<{ status: string }>();
+
+    await sseRequest(TEST_RUN_COMPLETED_ID, { after: '0' });
+
+    const afterRun = await database
+      .prepare('SELECT status FROM ai_runs WHERE id = ?')
+      .bind(TEST_RUN_COMPLETED_ID)
+      .first<{ status: string }>();
+
     const beforeCount = await database
       .prepare('SELECT COUNT(*) as cnt FROM ai_runs')
       .first<{ cnt: number }>();
 
-    await sseRequest(TEST_RUN_COMPLETED_ID, { after: '0' });
+    expect(afterRun!.status).toBe(beforeRun!.status);
+    expect(beforeCount!.cnt).toBeGreaterThan(0);
+  });
 
-    const afterCount = await database
-      .prepare('SELECT COUNT(*) as cnt FROM ai_runs')
-      .first<{ cnt: number }>();
+  // ── 回帰テスト ──────────────────────────────────────
 
-    expect(afterCount!.cnt).toBe(beforeCount!.cnt);
+  test('malformed non-terminal row: skip and continue to next event', async () => {
+    const RUN = 'test-run-malformed-nonterminal';
+    await database.prepare(
+      `INSERT INTO ai_runs (id, thread_id, source_post_id, idempotency_key, stage, status, model, prompt_version)
+       VALUES (?, ?, ?, ?, 'initial', 'completed', 'test-model', 'v1')`,
+    ).bind(RUN, TEST_THREAD_ID, TEST_POST_ID, 'idem-mf-nt').run();
+    await database.batch([
+      database.prepare(
+        `INSERT INTO ai_run_events (id, ai_run_id, sequence, event_type, data_json) VALUES (?, ?, 1, 'status', 'null')`,
+      ).bind('mf-nt-1', RUN),
+      database.prepare(
+        `INSERT INTO ai_run_events (id, ai_run_id, sequence, event_type, data_json) VALUES (?, ?, 2, 'completed', ?)`,
+      ).bind('mf-nt-2', RUN, JSON.stringify({ status: 'completed', post_ids: ['x'] })),
+    ]);
+
+    const res = await sseRequest(RUN, { after: '0' });
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    const events = parseSSEEvents(text).filter(e => e.event === 'ai-run' && e.data);
+
+    // malformed seq 1 はskip、seq 2 (completed) が届く
+    expect(events.length).toBe(1);
+    expect(JSON.parse(events[0].data!).status).toBe('completed');
+    expect(events[0].id).toBe('2');
+  });
+
+  test('malformed terminal row: returns AI_EVENT_INVALID', async () => {
+    const RUN = 'test-run-malformed-terminal';
+    await database.prepare(
+      `INSERT INTO ai_runs (id, thread_id, source_post_id, idempotency_key, stage, status, model, prompt_version)
+       VALUES (?, ?, ?, ?, 'initial', 'completed', 'test-model', 'v1')`,
+    ).bind(RUN, TEST_THREAD_ID, TEST_POST_ID, 'idem-mf-t').run();
+    await database.batch([
+      database.prepare(
+        `INSERT INTO ai_run_events (id, ai_run_id, sequence, event_type, data_json) VALUES (?, ?, 1, 'status', ?)`,
+      ).bind('mf-t-1', RUN, JSON.stringify({ status: 'queued' })),
+      database.prepare(
+        `INSERT INTO ai_run_events (id, ai_run_id, sequence, event_type, data_json) VALUES (?, ?, 2, 'completed', 'null')`,
+      ).bind('mf-t-2', RUN),
+    ]);
+
+    const res = await sseRequest(RUN, { after: '0' });
+    const text = await res.text();
+    const events = parseSSEEvents(text).filter(e => e.event === 'ai-run' && e.data);
+
+    const last = events[events.length - 1];
+    const data = JSON.parse(last.data!);
+    expect(data.status).toBe('failed');
+    expect(data.error_code).toBe('AI_EVENT_INVALID');
+  });
+
+  test('eventType=status with status=completed: treated as terminal and returns AI_EVENT_INVALID', async () => {
+    const RUN = 'test-run-type-status-mismatch';
+    await database.prepare(
+      `INSERT INTO ai_runs (id, thread_id, source_post_id, idempotency_key, stage, status, model, prompt_version)
+       VALUES (?, ?, ?, ?, 'initial', 'completed', 'test-model', 'v1')`,
+    ).bind(RUN, TEST_THREAD_ID, TEST_POST_ID, 'idem-mismatch').run();
+    await database.batch([
+      database.prepare(
+        `INSERT INTO ai_run_events (id, ai_run_id, sequence, event_type, data_json) VALUES (?, ?, 1, 'status', ?)`,
+      ).bind('mm-1', RUN, JSON.stringify({ status: 'completed', post_ids: ['x'] })),
+    ]);
+
+    const res = await sseRequest(RUN, { after: '0' });
+    const text = await res.text();
+    const events = parseSSEEvents(text).filter(e => e.event === 'ai-run' && e.data);
+
+    // eventType=status で status=completed → mapToPublicEvent returns null
+    // isTerminalEvent returns true → AI_EVENT_INVALID
+    expect(events.length).toBe(1);
+    const data = JSON.parse(events[0].data!);
+    expect(data.status).toBe('failed');
+    expect(data.error_code).toBe('AI_EVENT_INVALID');
+  });
+
+  test('sensitive fields are stripped even when present in data_json', async () => {
+    const RUN = 'test-run-sensitive';
+    await database.prepare(
+      `INSERT INTO ai_runs (id, thread_id, source_post_id, idempotency_key, stage, status, model, prompt_version)
+       VALUES (?, ?, ?, ?, 'initial', 'completed', 'test-model', 'v1')`,
+    ).bind(RUN, TEST_THREAD_ID, TEST_POST_ID, 'idem-sensitive').run();
+    await database.batch([
+      database.prepare(
+        `INSERT INTO ai_run_events (id, ai_run_id, sequence, event_type, data_json) VALUES (?, ?, 1, 'status', ?)`,
+      ).bind('sens-1', RUN, JSON.stringify({
+        status: 'generating',
+        prompt: 'secret system prompt',
+        completion: 'raw model output',
+        thinking: 'internal reasoning',
+        error_message: 'internal error detail',
+        result_hash: 'abc123',
+      })),
+      database.prepare(
+        `INSERT INTO ai_run_events (id, ai_run_id, sequence, event_type, data_json) VALUES (?, ?, 2, 'completed', ?)`,
+      ).bind('sens-2', RUN, JSON.stringify({
+        status: 'completed',
+        post_ids: ['p1'],
+        prompt: 'leaked prompt',
+        stack: 'Error at line 42',
+      })),
+    ]);
+
+    const res = await sseRequest(RUN, { after: '0' });
+    const text = await res.text();
+    const events = parseSSEEvents(text).filter(e => e.event === 'ai-run' && e.data);
+
+    for (const e of events) {
+      const data = JSON.parse(e.data!);
+      expect(data.prompt).toBeUndefined();
+      expect(data.completion).toBeUndefined();
+      expect(data.thinking).toBeUndefined();
+      expect(data.error_message).toBeUndefined();
+      expect(data.result_hash).toBeUndefined();
+      expect(data.stack).toBeUndefined();
+    }
+  });
+
+  test('failed event with unknown error_code falls back to AI_RUN_FAILED', async () => {
+    const RUN = 'test-run-unknown-code';
+    await database.prepare(
+      `INSERT INTO ai_runs (id, thread_id, source_post_id, idempotency_key, stage, status, model, prompt_version)
+       VALUES (?, ?, ?, ?, 'initial', 'failed', 'test-model', 'v1')`,
+    ).bind(RUN, TEST_THREAD_ID, TEST_POST_ID, 'idem-unk').run();
+    await database.batch([
+      database.prepare(
+        `INSERT INTO ai_run_events (id, ai_run_id, sequence, event_type, data_json) VALUES (?, ?, 1, 'failed', ?)`,
+      ).bind('unk-1', RUN, JSON.stringify({ status: 'failed', error_code: 'ARBITRARY_STRING' })),
+    ]);
+
+    const res = await sseRequest(RUN, { after: '0' });
+    const text = await res.text();
+    const events = parseSSEEvents(text).filter(e => e.event === 'ai-run' && e.data);
+
+    expect(events.length).toBe(1);
+    const data = JSON.parse(events[0].data!);
+    expect(data.error_code).toBe('AI_RUN_FAILED');
   });
 });

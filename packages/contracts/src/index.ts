@@ -13,6 +13,7 @@ export type {
   ApiError,
   CreateThreadResponse,
   CreatePostResponse,
+  PublicAiErrorCode,
   PublicAiRunEvent,
   AiRunProgress,
 } from './api.ts';
