@@ -27,6 +27,11 @@ scripts/
 
 .github/workflows/
   ci.yml -> docs/current-v1/repository/build-and-ci.md
+
+repository横断:
+  runtime flow        -> docs/current-v1/repository/runtime-flows.md
+  env / bindings      -> docs/current-v1/repository/environment-and-bindings.md
+  code inconsistencies -> docs/current-v1/repository/known-inconsistencies.md
 ```
 
 ## 現在の実行構成
@@ -87,6 +92,14 @@ Web POST server function
 - 認証失敗時にbrowser UUIDへfallbackするコードが残る
 - clientが`author_type`、`author_name`、reaction `userId`、thread statusを指定できる
 - READMEの一部データフローは現行コードと一致していない
+
+## 読み方
+
+- 現在のHTTP/UI挙動: `apps/*.md`
+- current D1 schema/query: `packages/db.md`
+- Worker間の実際の順序: `repository/runtime-flows.md`
+- 意図しない差異・dead path: `repository/known-inconsistencies.md`
+- 移行後の判断: `docs/adr/**`
 
 ## 関連する設計資料
 
