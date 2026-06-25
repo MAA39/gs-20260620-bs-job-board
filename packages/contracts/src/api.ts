@@ -19,15 +19,21 @@ export type CreatePostResponse = {
 
 // ── AI run SSE ──────────────────────────────────────────
 
-/** 公開境界で許可する error code。自由文字列は通さない。 */
-export type PublicAiErrorCode =
-  | 'AI_CONFIGURATION_ERROR'
-  | 'AI_PROVIDER_TIMEOUT'
-  | 'AI_OUTPUT_INVALID'
-  | 'AI_INPUT_INVALID'
-  | 'AI_RUN_FAILED'
-  | 'AI_DISPATCH_FAILED'
-  | 'AI_EVENT_INVALID';
+/** 公開境界で許可する error code。runtime 配列から型を導出する。 */
+export const PUBLIC_AI_ERROR_CODES = [
+  'AI_CONFIGURATION_ERROR',
+  'AI_PROVIDER_TIMEOUT',
+  'AI_OUTPUT_INVALID',
+  'AI_INPUT_INVALID',
+  'AI_RUN_FAILED',
+  'AI_DISPATCH_FAILED',
+  'AI_EVENT_INVALID',
+] as const;
+
+export type PublicAiErrorCode = (typeof PUBLIC_AI_ERROR_CODES)[number];
+
+/** 公開 error code の Set。API/Web 両方で重複なく参照する。 */
+export const PUBLIC_AI_ERROR_CODE_SET = new Set<string>(PUBLIC_AI_ERROR_CODES);
 
 /** ADR-003: 公開SSEで配信する allow-list 済みイベント */
 export type PublicAiRunEvent =

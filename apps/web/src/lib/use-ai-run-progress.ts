@@ -1,17 +1,58 @@
 import { useState, useEffect, useRef } from 'react';
-import type { AiRunProgress, PublicAiRunEvent } from '@bs-job-board/contracts';
+import type { AiRunProgress, PublicAiRunEvent, PublicAiErrorCode } from '@bs-job-board/contracts';
+import { PUBLIC_AI_ERROR_CODE_SET } from '@bs-job-board/contracts';
 
-// ── Public event parser ─────────────────────────────────
+// ── Public event parser (runtime検証) ───────────────────
 
 function parsePublicAiRunEvent(raw: string): PublicAiRunEvent | null {
+  let value: unknown;
   try {
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
-    if (typeof parsed.status !== 'string') return null;
-    return parsed as PublicAiRunEvent;
+    value = JSON.parse(raw);
   } catch {
     return null;
   }
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+
+  const record = value as Record<string, unknown>;
+  switch (record.status) {
+    case 'queued':
+    case 'admitted':
+    case 'generating':
+    case 'repairing':
+      return { status: record.status };
+
+    case 'completed':
+      if (
+        !Array.isArray(record.post_ids) ||
+        !record.post_ids.every((id): id is string => typeof id === 'string')
+      ) {
+        return null;
+      }
+      return { status: 'completed', post_ids: record.post_ids };
+
+    case 'failed':
+      if (
+        typeof record.error_code !== 'string' ||
+        !PUBLIC_AI_ERROR_CODE_SET.has(record.error_code)
+      ) {
+        return null;
+      }
+      return { status: 'failed', error_code: record.error_code as PublicAiErrorCode };
+
+    default:
+      return null;
+  }
+}
+
+// ── Run-scoped state ────────────────────────────────────
+
+type ScopedProgress = {
+  runId: string | null;
+  value: AiRunProgress;
+};
+
+function initialProgress(runId: string | null): AiRunProgress {
+  return runId ? { status: 'connecting' } : { status: 'idle' };
 }
 
 // ── Hook ────────────────────────────────────────────────
@@ -19,39 +60,55 @@ function parsePublicAiRunEvent(raw: string): PublicAiRunEvent | null {
 /**
  * AI run の進捗を購読する hook。
  *
- * - native EventSource で接続（自動再接続対応）
+ * - run-scoped: runId が変わった最初の render から正しい状態を返す
+ * - currentRunIdRef で旧 EventSource の遅延 event を拒否
  * - completed → onCompleted コールバック → close
  * - failed → close
  * - component unmount → close
- * - **投稿 API を再実行しない**（SSE は購読専用）
+ * - 投稿 API を再実行しない（SSE は購読専用）
  */
 export function useAiRunProgress(
   aiRunId: string | null,
   apiBaseUrl: string,
   onCompleted: () => void,
 ): AiRunProgress {
-  const [progress, setProgress] = useState<AiRunProgress>(
-    aiRunId ? { status: 'connecting' } : { status: 'idle' },
-  );
   const onCompletedRef = useRef(onCompleted);
   onCompletedRef.current = onCompleted;
 
-  // 前 run の domain status を次 run の再接続時に復元しないよう、
-  // aiRunId 変更時に必ず reset する。
+  // render 時点の最新 run。旧 EventSource の遅延 event を拒否する。
+  const currentRunIdRef = useRef(aiRunId);
+  currentRunIdRef.current = aiRunId;
+
   const lastRunStatusRef = useRef<AiRunProgress['status']>('connecting');
 
+  const [state, setState] = useState<ScopedProgress>(() => ({
+    runId: aiRunId,
+    value: initialProgress(aiRunId),
+  }));
+
+  // effect を待たず、新 run の最初の render から正しい状態を返す。
+  const visibleProgress =
+    state.runId === aiRunId ? state.value : initialProgress(aiRunId);
+
   useEffect(() => {
-    if (!aiRunId) {
-      setProgress({ status: 'idle' });
-      return;
-    }
-
-    // run 変更時: ref を reset
+    const runId = aiRunId;
     lastRunStatusRef.current = 'connecting';
-    setProgress({ status: 'connecting' });
+    setState({ runId, value: initialProgress(runId) });
 
-    const url = `${apiBaseUrl}/api/v1/ai-runs/${encodeURIComponent(aiRunId)}/events?after=0`;
-    const source = new EventSource(url);
+    if (!runId) return;
+
+    let disposed = false;
+    let terminalHandled = false;
+
+    const source = new EventSource(
+      `${apiBaseUrl}/api/v1/ai-runs/${encodeURIComponent(runId)}/events?after=0`,
+    );
+
+    const publish = (value: AiRunProgress): boolean => {
+      if (disposed || currentRunIdRef.current !== runId) return false;
+      setState({ runId, value });
+      return true;
+    };
 
     const handleEvent = (event: Event) => {
       const message = event as MessageEvent<string>;
@@ -59,43 +116,50 @@ export function useAiRunProgress(
       if (!parsed) return;
 
       if (parsed.status === 'completed') {
-        const postIds = 'post_ids' in parsed ? parsed.post_ids : undefined;
-        setProgress({ status: 'completed', postIds });
+        if (terminalHandled) return;
+        terminalHandled = true;
+        if (!publish({ status: 'completed', postIds: parsed.post_ids })) return;
         source.close();
         onCompletedRef.current();
-      } else if (parsed.status === 'failed') {
-        const errorCode = 'error_code' in parsed ? parsed.error_code : undefined;
-        setProgress({ status: 'failed', errorCode });
-        source.close();
-      } else {
-        lastRunStatusRef.current = parsed.status;
-        setProgress({ status: parsed.status });
+        return;
       }
+
+      if (parsed.status === 'failed') {
+        if (terminalHandled) return;
+        terminalHandled = true;
+        if (!publish({ status: 'failed', errorCode: parsed.error_code })) return;
+        source.close();
+        return;
+      }
+
+      lastRunStatusRef.current = parsed.status;
+      publish({ status: parsed.status });
     };
 
     source.addEventListener('ai-run', handleEvent);
 
     source.onerror = () => {
       if (source.readyState === EventSource.CONNECTING) {
-        setProgress({ status: 'reconnecting' });
+        publish({ status: 'reconnecting' });
       }
     };
 
     source.onopen = () => {
-      // 再接続成功時: 最後の domain status を復元
-      setProgress((prev) =>
-        prev.status === 'reconnecting'
-          ? { status: lastRunStatusRef.current }
-          : prev,
-      );
+      if (disposed || currentRunIdRef.current !== runId) return;
+      setState((prev) => {
+        if (prev.runId !== runId || prev.value.status !== 'reconnecting') return prev;
+        return { runId, value: { status: lastRunStatusRef.current } };
+      });
     };
 
     return () => {
+      disposed = true;
+      source.removeEventListener('ai-run', handleEvent);
       source.close();
     };
   }, [aiRunId, apiBaseUrl]);
 
-  return progress;
+  return visibleProgress;
 }
 
 // ── Progress label ──────────────────────────────────────
