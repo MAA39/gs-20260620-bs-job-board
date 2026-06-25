@@ -57,3 +57,7 @@ jobs:
           test -z "$(grep -RE 'env\.DB|D1Database' apps/agent/src/workflows || true)"
           test -z "$(grep -R '"d1_databases"' apps/agent/wrangler.jsonc apps/agent/.flue-vite.wrangler.jsonc || true)"
           grep -Eq '"workers_dev"[[:space:]]*:[[:space:]]*false' apps/agent/wrangler.jsonc
+      - name: Public route authority guard
+        run: |
+          # Public thread routes must not use legacy addPost (ADR-004: AI posts via callback only)
+          test -z "$(grep -R 'addPost' apps/api/src/routes/threads.ts || true)"
