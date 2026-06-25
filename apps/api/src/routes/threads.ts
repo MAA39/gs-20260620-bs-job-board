@@ -1,14 +1,27 @@
 import { Hono } from 'hono';
-import type { CreateThreadInput, CreatePostInput } from '@bs-job-board/contracts';
+import type { CreatePostInput } from '@bs-job-board/contracts';
 import {
   listThreadsSorted,
   getThreadDetail,
-  createThread,
   addPost,
   updateThreadStatus,
   toggleReaction,
 } from '@bs-job-board/db';
+import {
+  createThreadWithInitialPostAndQueuedRun,
+  insertHumanPostWithQueuedRun,
+  markRunAdmitted,
+  failRun,
+  getAiRunById,
+} from '@bs-job-board/db/ai-pipeline';
 import { getSessionUser } from '../auth.ts';
+
+// ── Constants ───────────────────────────────────────────
+
+const AI_MODEL = 'sakura-ai/gpt-oss-120b';
+const PROMPT_VERSION = 'initial-v1';
+
+// ── Bindings ────────────────────────────────────────────
 
 type Bindings = {
   DB: D1Database;
@@ -16,25 +29,86 @@ type Bindings = {
   AGENT: { fetch: typeof fetch };
 };
 
-async function dispatchAiReplies(
+// ── Idempotency key ─────────────────────────────────────
+
+async function computeIdempotencyKey(
+  sourcePostId: string,
+  stage: string,
+  promptVersion: string,
+): Promise<string> {
+  const input = `ai-run:v1:${sourcePostId}:${stage}:${promptVersion}`;
+  const encoded = new TextEncoder().encode(input);
+  const hash = await crypto.subtle.digest('SHA-256', encoded);
+  return Array.from(new Uint8Array(hash))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+// ── Dispatch with run lifecycle ─────────────────────────
+//
+// HANDOFF #10:
+// - dispatch 前に admitted へ遷移
+// - dispatch 失敗時、completed でなければ failed へ遷移
+// - Agent に ai_run_id を渡す（#11 で Agent 側が使う）
+// - Hono ExecutionContext 全体ではなく waitUntil 能力だけ要求
+
+type WaitUntilCapable = { waitUntil: (promise: Promise<unknown>) => void };
+
+async function dispatchWithRunLifecycle(
   agent: { fetch: typeof fetch },
+  db: D1Database,
+  aiRunId: string,
   threadId: string,
   threadTitle: string,
   targetBody: string,
   targetPostNumber: number,
 ): Promise<void> {
-  const response = await agent.fetch(
-    new Request('http://agent/workflows/generate-replies', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ threadId, threadTitle, targetBody, targetPostNumber }),
-    }),
-  );
+  // admitted 遷移
+  await markRunAdmitted({
+    db: db as unknown as Parameters<typeof markRunAdmitted>[0]['db'],
+    aiRunId,
+    eventId: crypto.randomUUID(),
+  });
 
   try {
-    if (!response.ok) throw new Error(`Workflow dispatch failed with ${response.status}`);
-  } finally {
-    await response.body?.cancel().catch(() => undefined);
+    const response = await agent.fetch(
+      new Request('http://agent/workflows/generate-replies', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          threadId,
+          threadTitle,
+          targetBody,
+          targetPostNumber,
+          aiRunId, // #11 で Agent 側が使う
+        }),
+      }),
+    );
+
+    try {
+      if (!response.ok) {
+        throw new Error(`Workflow dispatch failed with ${response.status}`);
+      }
+    } finally {
+      await response.body?.cancel().catch(() => undefined);
+    }
+  } catch (error) {
+    // dispatch 失敗: completed でなければ安全に failed へ遷移
+    const run = await getAiRunById(
+      db as unknown as Parameters<typeof getAiRunById>[0],
+      aiRunId,
+    );
+    if (run && run.status !== 'completed' && run.status !== 'failed') {
+      await failRun({
+        db: db as unknown as Parameters<typeof failRun>[0]['db'],
+        aiRunId,
+        eventId: crypto.randomUUID(),
+        errorCode: 'AI_DISPATCH_FAILED',
+        errorMessage:
+          error instanceof Error ? error.message : 'Unknown dispatch error',
+      }).catch(() => undefined);
+    }
+    throw error;
   }
 }
 
@@ -49,6 +123,8 @@ function logDispatchFailure(error: unknown): void {
   console.error('AI workflow dispatch failed', { name: 'UnknownError' });
 }
 
+// ── Routes ──────────────────────────────────────────────
+
 export const threadRoutes = new Hono<{ Bindings: Bindings }>()
   .get('/', async (context) => {
     const sort = (context.req.query('sort') ?? 'new') as 'new' | 'hot';
@@ -60,42 +136,103 @@ export const threadRoutes = new Hono<{ Bindings: Bindings }>()
     return context.json(detail);
   })
   .post('/', async (context) => {
-    const input = await context.req.json<CreateThreadInput>();
-    const { threadId } = await createThread(context.env.DB, input);
-    context.executionCtx.waitUntil(
-      dispatchAiReplies(context.env.AGENT, threadId, input.title, input.body, 1)
-        .catch(logDispatchFailure),
+    const input = await context.req.json<{ title: string; body: string }>();
+
+    const threadId = crypto.randomUUID();
+    const postId = crypto.randomUUID();
+    const aiRunId = crypto.randomUUID();
+    const idempotencyKey = await computeIdempotencyKey(
+      postId,
+      'initial',
+      PROMPT_VERSION,
     );
-    return context.json({ id: threadId, title: input.title }, 201);
+
+    // thread + initial post + queued run を原子的に作成
+    await createThreadWithInitialPostAndQueuedRun({
+      db: context.env.DB as unknown as Parameters<typeof createThreadWithInitialPostAndQueuedRun>[0]['db'],
+      thread: { id: threadId, title: input.title, body: input.body },
+      post: { id: postId, authorName: '名無しさん', userId: null },
+      aiRun: {
+        id: aiRunId,
+        idempotencyKey,
+        model: AI_MODEL,
+        promptVersion: PROMPT_VERSION,
+      },
+      queuedEventId: crypto.randomUUID(),
+    });
+
+    // dispatch（waitUntil で非同期実行）
+    context.executionCtx.waitUntil(
+      dispatchWithRunLifecycle(
+        context.env.AGENT,
+        context.env.DB,
+        aiRunId,
+        threadId,
+        input.title,
+        input.body,
+        1, // initial post_number
+      ).catch(logDispatchFailure),
+    );
+
+    return context.json({ id: threadId, title: input.title, ai_run: { id: aiRunId } }, 201);
   })
   .post('/:id/posts', async (context) => {
     const threadId = context.req.param('id');
     const input = await context.req.json<CreatePostInput>();
+
     const sessionUser = await getSessionUser(
       context.env.DB,
       context.env.BETTER_AUTH_SECRET || '',
       new URL(context.req.url).origin,
       context.req.raw,
     );
-    const enrichedInput = {
-      ...input,
-      user_id: sessionUser?.id ?? null,
-      author_name:
-        sessionUser?.name && sessionUser.name !== 'Anonymous'
-          ? sessionUser.name
-          : input.author_name,
-    };
-    const { postId, postNumber } = await addPost(context.env.DB, threadId, enrichedInput);
+
+    const authorName =
+      sessionUser?.name && sessionUser.name !== 'Anonymous'
+        ? sessionUser.name
+        : input.author_name;
+    const userId = sessionUser?.id ?? null;
 
     if (input.author_type === 'human') {
+      // human 投稿: post + queued run を原子的に作成
+      const postId = crypto.randomUUID();
+      const aiRunId = crypto.randomUUID();
+      const idempotencyKey = await computeIdempotencyKey(
+        postId,
+        'deep_dive',
+        PROMPT_VERSION,
+      );
+
+      const { postNumber } = await insertHumanPostWithQueuedRun({
+        db: context.env.DB as unknown as Parameters<typeof insertHumanPostWithQueuedRun>[0]['db'],
+        post: {
+          id: postId,
+          threadId,
+          authorName,
+          body: input.body,
+          userId,
+        },
+        aiRun: {
+          id: aiRunId,
+          idempotencyKey,
+          model: AI_MODEL,
+          promptVersion: PROMPT_VERSION,
+        },
+        queuedEventId: crypto.randomUUID(),
+      });
+
+      // thread title を取得（dispatch 用）
       const thread = await context.env.DB
         .prepare('SELECT title FROM threads WHERE id = ?')
         .bind(threadId)
         .first<{ title: string }>();
+
       if (thread) {
         context.executionCtx.waitUntil(
-          dispatchAiReplies(
+          dispatchWithRunLifecycle(
             context.env.AGENT,
+            context.env.DB,
+            aiRunId,
             threadId,
             thread.title,
             input.body,
@@ -103,7 +240,24 @@ export const threadRoutes = new Hono<{ Bindings: Bindings }>()
           ).catch(logDispatchFailure),
         );
       }
+
+      return context.json(
+        { id: postId, post_number: postNumber, ai_run: { id: aiRunId } },
+        201,
+      );
     }
+
+    // AI 投稿（#11 で撤去予定: Agent callback に移行）
+    const enrichedInput = {
+      ...input,
+      user_id: userId,
+      author_name: authorName,
+    };
+    const { postId, postNumber } = await addPost(
+      context.env.DB,
+      threadId,
+      enrichedInput,
+    );
 
     return context.json({ id: postId, post_number: postNumber }, 201);
   })

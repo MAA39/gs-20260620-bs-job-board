@@ -4,9 +4,11 @@ import { describe, expect, test } from 'vitest';
 import {
   completeRunAtomic,
   createQueuedRun,
+  createThreadWithInitialPostAndQueuedRun,
   failRun,
   getAiGenerationContext,
   getAiRunById,
+  insertHumanPostWithQueuedRun,
   listAiRunEventsAfter,
   markRunAdmitted,
   markRunGenerating,
@@ -634,7 +636,6 @@ describe('completeRunAtomic — cross-thread corrupted run', () => {
       .run();
 
     // completeRunAtomic: WHERE EXISTS の source/thread 検証で post/link は 0 行
-    // → InvalidTransitionError（run は generating のままだが、post/link が入らないため）
     const postsBefore = await database
       .prepare('SELECT COUNT(*) as cnt FROM posts WHERE thread_id = ?')
       .bind('thread-x')
@@ -656,5 +657,111 @@ describe('completeRunAtomic — cross-thread corrupted run', () => {
       .bind('thread-x')
       .first<{ cnt: number }>();
     expect(postsAfter!.cnt).toBe(postsBefore!.cnt);
+  });
+});
+
+// ── Phase 2A-2: Atomic thread/post + queued run ─────────
+
+describe('createThreadWithInitialPostAndQueuedRun', () => {
+  test('thread + initial post + queued run + queued event が原子的に作られる', async () => {
+    const result = await createThreadWithInitialPostAndQueuedRun({
+      db: database,
+      thread: { id: 'thread-atomic-1', title: '転記作業', body: '毎週同じ転記をしています' },
+      post: { id: 'post-atomic-1', authorName: '名無しさん', userId: null },
+      aiRun: {
+        id: 'run-atomic-1',
+        idempotencyKey: 'idem-atomic-1',
+        model: 'sakura-ai/gpt-oss-120b',
+        promptVersion: 'initial-v1',
+      },
+      queuedEventId: 'ev-q-atomic-1',
+    });
+
+    expect(result.threadId).toBe('thread-atomic-1');
+    expect(result.firstPostId).toBe('post-atomic-1');
+    expect(result.aiRunId).toBe('run-atomic-1');
+
+    // run が queued で作られている
+    const run = await getAiRunById(database, 'run-atomic-1');
+    expect(run).not.toBeNull();
+    expect(run!.status).toBe('queued');
+    expect(run!.stage).toBe('initial');
+    expect(run!.source_post_id).toBe('post-atomic-1');
+
+    // queued event が作られている
+    const events = await listAiRunEventsAfter(database, 'run-atomic-1', 0);
+    expect(events).toHaveLength(1);
+    expect(JSON.parse(events[0].data_json)).toEqual({ status: 'queued' });
+  });
+
+  test('同じ idempotency key で DbConflictError', async () => {
+    await createThreadWithInitialPostAndQueuedRun({
+      db: database,
+      thread: { id: 'thread-idem-a', title: 'test', body: 'test' },
+      post: { id: 'post-idem-a', authorName: '名無しさん', userId: null },
+      aiRun: { id: 'run-idem-a', idempotencyKey: 'idem-dup-atomic', model: 'm', promptVersion: 'v1' },
+      queuedEventId: 'ev-idem-a',
+    });
+
+    await expect(
+      createThreadWithInitialPostAndQueuedRun({
+        db: database,
+        thread: { id: 'thread-idem-b', title: 'test2', body: 'test2' },
+        post: { id: 'post-idem-b', authorName: '名無しさん', userId: null },
+        aiRun: { id: 'run-idem-b', idempotencyKey: 'idem-dup-atomic', model: 'm', promptVersion: 'v1' },
+        queuedEventId: 'ev-idem-b',
+      }),
+    ).rejects.toThrow(DbConflictError);
+  });
+});
+
+describe('insertHumanPostWithQueuedRun', () => {
+  test('human post + queued run (deep_dive) + queued event が原子的に作られる', async () => {
+    await seedThread('thread-reply-1');
+    await seedHumanPost('post-reply-orig', 'thread-reply-1', 1);
+
+    const result = await insertHumanPostWithQueuedRun({
+      db: database,
+      post: {
+        id: 'post-reply-human',
+        threadId: 'thread-reply-1',
+        authorName: '名無しさん',
+        body: 'うちもそうです',
+        userId: null,
+      },
+      aiRun: {
+        id: 'run-reply-1',
+        idempotencyKey: 'idem-reply-1',
+        model: 'sakura-ai/gpt-oss-120b',
+        promptVersion: 'initial-v1',
+      },
+      queuedEventId: 'ev-q-reply-1',
+    });
+
+    expect(result.postId).toBe('post-reply-human');
+    expect(result.postNumber).toBe(2);
+    expect(result.aiRunId).toBe('run-reply-1');
+
+    const run = await getAiRunById(database, 'run-reply-1');
+    expect(run!.status).toBe('queued');
+    expect(run!.stage).toBe('deep_dive');
+    expect(run!.source_post_id).toBe('post-reply-human');
+  });
+
+  test('存在しない thread への投稿はエラー', async () => {
+    await expect(
+      insertHumanPostWithQueuedRun({
+        db: database,
+        post: {
+          id: 'post-no-thread',
+          threadId: 'nonexistent-thread',
+          authorName: '名無しさん',
+          body: 'test',
+          userId: null,
+        },
+        aiRun: { id: 'run-no-thread', idempotencyKey: 'idem-no-thread', model: 'm', promptVersion: 'v1' },
+        queuedEventId: 'ev-no-thread',
+      }),
+    ).rejects.toThrow('not found');
   });
 });
