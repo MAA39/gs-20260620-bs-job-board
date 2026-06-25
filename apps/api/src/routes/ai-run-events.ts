@@ -34,12 +34,12 @@ const PUBLIC_ERROR_CODES = new Set<PublicAiErrorCode>([
   'AI_EVENT_INVALID',
 ]);
 
-/** eventType と status の許可組み合わせ */
-const EVENT_TYPE_STATUS_MAP: Record<string, ReadonlySet<AiRunStatus>> = {
-  status: new Set<AiRunStatus>(['queued', 'admitted', 'generating', 'repairing']),
-  completed: new Set<AiRunStatus>(['completed']),
-  failed: new Set<AiRunStatus>(['failed']),
-};
+/** eventType と status の許可組み合わせ。fail-closed: 未知の eventType は拒否。 */
+const EVENT_TYPE_STATUS_MAP = new Map<string, ReadonlySet<AiRunStatus>>([
+  ['status', new Set<AiRunStatus>(['queued', 'admitted', 'generating', 'repairing'])],
+  ['completed', new Set<AiRunStatus>(['completed'])],
+  ['failed', new Set<AiRunStatus>(['failed'])],
+]);
 
 // ── Route factory config ────────────────────────────────
 // テスト時に差し替え可能にする
@@ -90,9 +90,9 @@ function mapToPublicEvent(
   const status = parsed.status;
   if (typeof status !== 'string' || !STATUS_ALLOW_LIST.has(status as AiRunStatus)) return null;
 
-  // eventType-status 整合チェック
-  const allowedStatuses = EVENT_TYPE_STATUS_MAP[eventType];
-  if (allowedStatuses && !allowedStatuses.has(status as AiRunStatus)) return null;
+  // eventType-status 整合チェック（fail-closed: 未知の eventType は拒否）
+  const allowedStatuses = EVENT_TYPE_STATUS_MAP.get(eventType);
+  if (!allowedStatuses || !allowedStatuses.has(status as AiRunStatus)) return null;
 
   if (status === 'completed') {
     const postIds = parsed.post_ids;
