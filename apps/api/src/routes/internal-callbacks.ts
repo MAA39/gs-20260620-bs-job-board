@@ -14,39 +14,55 @@ type Bindings = {
   INTERNAL_CALLBACK_KEY: string;
 };
 
-type CompletePayload = {
-  resultHash: string;
-  replies: Array<{ body: string }>;
-  usage?: {
-    inputTokens?: number;
-    outputTokens?: number;
-    cacheReadTokens?: number;
-    cacheWriteTokens?: number;
-    estimatedCostMicros?: number;
-  };
-  promptVersion?: string;
-  model?: string;
+// ── Error code allow-list ───────────────────────────────
+
+const ALLOWED_ERROR_CODES = new Set([
+  'AI_CONFIGURATION_ERROR',
+  'AI_PROVIDER_TIMEOUT',
+  'AI_OUTPUT_INVALID',
+  'AI_INPUT_INVALID',
+  'AI_RUN_FAILED',
+  'AI_DISPATCH_FAILED',
+]);
+
+const SAFE_ERROR_MESSAGES: Record<string, string> = {
+  AI_CONFIGURATION_ERROR: 'Agent configuration missing or invalid',
+  AI_PROVIDER_TIMEOUT: 'AI provider did not respond within time limit',
+  AI_OUTPUT_INVALID: 'AI output failed validation after repair attempt',
+  AI_INPUT_INVALID: 'Dispatch payload missing required fields',
+  AI_RUN_FAILED: 'AI workflow encountered an unexpected error',
+  AI_DISPATCH_FAILED: 'Workflow dispatch failed',
 };
 
-type FailPayload = {
-  errorCode: string;
-  errorMessage: string;
-};
+// ── Protocol ────────────────────────────────────────────
 
-// ── Callback key verification ───────────────────────────
+const PROTOCOL_VERSION = '1';
+
+// ── Helpers ─────────────────────────────────────────────
 
 function verifyCallbackKey(
   requestKey: string | undefined,
   expectedKey: string,
 ): boolean {
   if (!expectedKey || !requestKey) return false;
-  // constant-time comparison to prevent timing attacks
   if (requestKey.length !== expectedKey.length) return false;
   let mismatch = 0;
   for (let i = 0; i < expectedKey.length; i++) {
     mismatch |= requestKey.charCodeAt(i) ^ expectedKey.charCodeAt(i);
   }
   return mismatch === 0;
+}
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+async function safeParseJson(c: { req: { json: () => Promise<unknown> } }): Promise<unknown> {
+  try {
+    return await c.req.json();
+  } catch {
+    return null;
+  }
 }
 
 // ── Routes ──────────────────────────────────────────────
@@ -97,23 +113,46 @@ export const internalCallbackRoutes = new Hono<{ Bindings: Bindings }>()
 
   .post('/:aiRunId/complete', async (c) => {
     const aiRunId = c.req.param('aiRunId');
-    const payload = await c.req.json<CompletePayload>();
+    const raw = await safeParseJson(c);
 
-    if (!payload.resultHash || !Array.isArray(payload.replies)) {
-      return c.json({ error: 'invalid payload' }, 400);
+    // payload validation
+    if (!isRecord(raw)) {
+      return c.json({ error: 'invalid payload: expected JSON object' }, 400);
     }
+    if (typeof raw.resultHash !== 'string' || !raw.resultHash) {
+      return c.json({ error: 'invalid payload: resultHash string required' }, 400);
+    }
+    if (!Array.isArray(raw.replies) || raw.replies.length === 0) {
+      return c.json({ error: 'invalid payload: replies array required' }, 400);
+    }
+    for (const reply of raw.replies) {
+      if (!isRecord(reply) || typeof reply.body !== 'string' || !reply.body) {
+        return c.json({ error: 'invalid payload: each reply must have a body string' }, 400);
+      }
+    }
+    if (typeof raw.protocolVersion !== 'undefined' && raw.protocolVersion !== PROTOCOL_VERSION) {
+      return c.json({ error: `unsupported protocol version: expected ${PROTOCOL_VERSION}` }, 400);
+    }
+
+    const usage = isRecord(raw.usage) ? {
+      inputTokens: typeof raw.usage.inputTokens === 'number' ? raw.usage.inputTokens : undefined,
+      outputTokens: typeof raw.usage.outputTokens === 'number' ? raw.usage.outputTokens : undefined,
+      cacheReadTokens: typeof raw.usage.cacheReadTokens === 'number' ? raw.usage.cacheReadTokens : undefined,
+      cacheWriteTokens: typeof raw.usage.cacheWriteTokens === 'number' ? raw.usage.cacheWriteTokens : undefined,
+      estimatedCostMicros: typeof raw.usage.estimatedCostMicros === 'number' ? raw.usage.estimatedCostMicros : undefined,
+    } : undefined;
 
     try {
       const result = await completeRunAtomic({
         db: c.env.DB as unknown as Parameters<typeof completeRunAtomic>[0]['db'],
         aiRunId,
-        resultHash: payload.resultHash,
+        resultHash: raw.resultHash as string,
         completedEventId: crypto.randomUUID(),
-        replies: payload.replies.map((r) => ({
+        replies: (raw.replies as Array<{ body: string }>).map((r) => ({
           postId: crypto.randomUUID(),
           body: r.body,
         })),
-        usage: payload.usage,
+        usage,
       });
       return c.json({ ok: true, duplicate: result.duplicate, postIds: result.postIds });
     } catch (error) {
@@ -129,19 +168,29 @@ export const internalCallbackRoutes = new Hono<{ Bindings: Bindings }>()
 
   .post('/:aiRunId/fail', async (c) => {
     const aiRunId = c.req.param('aiRunId');
-    const payload = await c.req.json<FailPayload>();
+    const raw = await safeParseJson(c);
 
-    if (!payload.errorCode) {
-      return c.json({ error: 'errorCode required' }, 400);
+    if (!isRecord(raw)) {
+      return c.json({ error: 'invalid payload: expected JSON object' }, 400);
     }
+    if (typeof raw.errorCode !== 'string' || !raw.errorCode) {
+      return c.json({ error: 'invalid payload: errorCode string required' }, 400);
+    }
+
+    // errorCode allow-list: 不明なコードは AI_RUN_FAILED に正規化
+    const errorCode = ALLOWED_ERROR_CODES.has(raw.errorCode)
+      ? raw.errorCode
+      : 'AI_RUN_FAILED';
+    // safe message: raw message を保存しない
+    const errorMessage = SAFE_ERROR_MESSAGES[errorCode] || 'AI workflow encountered an unexpected error';
 
     try {
       await failRun({
         db: c.env.DB as unknown as Parameters<typeof failRun>[0]['db'],
         aiRunId,
         eventId: crypto.randomUUID(),
-        errorCode: payload.errorCode,
-        errorMessage: (payload.errorMessage || '').slice(0, 500),
+        errorCode,
+        errorMessage,
       });
       return c.json({ ok: true });
     } catch (error) {

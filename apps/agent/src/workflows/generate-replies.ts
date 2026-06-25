@@ -23,7 +23,6 @@ const SYSTEM_PROMPT = `2chふう匿名掲示板の住民として返答する。
 /** API が組み立てた generation context + callback 情報 */
 type DispatchPayload = {
   aiRunId: string;
-  callbackKey: string;
   context: {
     thread: { id: string; title: string; body: string };
     sourcePost: { id: string; postNumber: number; body: string };
@@ -61,6 +60,16 @@ class SafeWorkflowError extends Error {
   }
 }
 
+const SAFE_ERROR_MESSAGES: Record<string, string> = {
+  AI_CONFIGURATION_ERROR: 'Agent configuration missing or invalid',
+  AI_PROVIDER_TIMEOUT: 'AI provider did not respond within time limit',
+  AI_OUTPUT_INVALID: 'AI output failed validation after repair attempt',
+  AI_INPUT_INVALID: 'Dispatch payload missing required fields',
+  AI_RUN_FAILED: 'AI workflow encountered an unexpected error',
+  AI_DISPATCH_FAILED: 'Workflow dispatch failed',
+};
+
+
 // ── Agent definition ────────────────────────────────────
 
 const replyAgent = createAgent<unknown, Env>(({ env }) => ({
@@ -75,7 +84,8 @@ export const route: WorkflowRouteHandler = async (_context, next) => next();
 
 export async function run({ payload, env, init }: FlueContext<unknown, Env>): Promise<RunResult> {
   const input = parsePayload(payload);
-  const callbackKey = input.callbackKey || env.INTERNAL_CALLBACK_KEY || '';
+  const callbackKey = env.INTERNAL_CALLBACK_KEY?.trim();
+  if (!callbackKey) throw new SafeWorkflowError('AI_CONFIGURATION_ERROR');
 
   try {
     const modelId = registerSakura(env);
@@ -107,16 +117,19 @@ export async function run({ payload, env, init }: FlueContext<unknown, Env>): Pr
 
     const resultHash = await computeHash(decoded.value.replies.join('\n'));
 
-    // callback: complete
+    // callback: complete (full contract per #11 AC)
     await callbackToApi(env.API, input.aiRunId, 'complete', callbackKey, {
+      protocolVersion: '1',
+      aiRunId: input.aiRunId,
+      stage: input.context.stage,
+      promptVersion: input.context.promptVersion,
+      model: `${response.model?.provider || PROVIDER_ID}/${response.model?.id || modelId}`,
       resultHash,
       replies: decoded.value.replies.map((body) => ({ body })),
       usage: {
         inputTokens: nonNegative(response.usage?.input),
         outputTokens: nonNegative(response.usage?.output),
       },
-      promptVersion: input.context.promptVersion,
-      model: `${response.model?.provider || PROVIDER_ID}/${response.model?.id || modelId}`,
     });
 
     return {
@@ -132,11 +145,10 @@ export async function run({ payload, env, init }: FlueContext<unknown, Env>): Pr
     };
   } catch (error) {
     const errorCode = toSafeErrorCode(error);
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-    // callback: fail
+    // ADR-004: raw error.message を保存しない。allow-list code + safe message のみ
     await callbackToApi(env.API, input.aiRunId, 'fail', callbackKey, {
       errorCode,
-      errorMessage: errorMessage.slice(0, 500),
+      errorMessage: SAFE_ERROR_MESSAGES[errorCode] || 'AI workflow encountered an unexpected error',
     }).catch(() => undefined);
 
     throw new SafeWorkflowError(errorCode);

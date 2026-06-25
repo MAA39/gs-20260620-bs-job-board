@@ -62,6 +62,18 @@ async function dispatchWithRunLifecycle(
   callbackKey: string,
   aiRunId: string,
 ): Promise<void> {
+  // callback key 未設定チェック
+  if (!callbackKey?.trim()) {
+    await failRun({
+      db: db as unknown as Parameters<typeof failRun>[0]['db'],
+      aiRunId,
+      eventId: crypto.randomUUID(),
+      errorCode: 'AI_CONFIGURATION_ERROR',
+      errorMessage: 'Internal callback key not configured',
+    }).catch(() => undefined);
+    return;
+  }
+
   // admitted 遷移
   await markRunAdmitted({
     db: db as unknown as Parameters<typeof markRunAdmitted>[0]['db'],
@@ -93,7 +105,6 @@ async function dispatchWithRunLifecycle(
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           aiRunId,
-          callbackKey,
           context: {
             thread: ctx.thread,
             sourcePost: {
