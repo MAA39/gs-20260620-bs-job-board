@@ -33,6 +33,8 @@ admitted -> failed
 
 各commandは期待する前状態をSQL条件で検証する。無効な遷移ではrun rowを変更せず、eventも追加しない。成功した状態遷移とevent追加は同一atomic operationに含める。
 
+D1 `batch()`で「条件付きUPDATEの後に無条件INSERT」を並べるだけでは不十分である。UPDATEが0行でも後続INSERTは実行され得るため、状態だけ／eventだけが残る実装を禁止する。#9ではDB trigger、または遷移成功をSQL上で条件にしたevent INSERTなど、0行更新時にeventが作られない方式を採用し、実D1 integration testで確認する。
+
 ### 3. queued event
 
 run作成時に`queued` eventも同じD1 batchで作成する。Phase 2A-2ではhuman post、queued run、queued eventを同じbatchへ組み込む。
@@ -74,6 +76,8 @@ AI postの`author_type='ai'`、`author_name='名無しさん'`、`role=NULL`はD
 
 Agentへ渡すprior postsはsource postより前の直近8件に限定し、昇順で返す。legacy thinking投稿は`role='thinking'`または旧thinking投稿者名で除外する。非公開の生成本文を再びpromptへ混入させない。
 
+`analyst`、`structure`、`transform`、`comment`はV1で公開投稿として使われたlegacy roleであり、一律除外しない。非公開扱いは`thinking`に限定する。将来、公開／非公開roleを増やす場合は別ADRでallow-list化する。
+
 ### 8. event sequence
 
 run内のsequenceは1から始まり単調増加する。unique `(ai_run_id, sequence)`をDBで保証する。競合時に状態だけ更新されeventが欠落する実装、またはeventだけ追加される実装を許可しない。
@@ -90,6 +94,7 @@ run内のsequenceは1から始まり単調増加する。unique `(ai_run_id, seq
 
 - 各許可遷移
 - 各不許可遷移でrow/eventが不変
+- 条件付きUPDATEが0行のときeventが作られない
 - queued runとqueued eventのatomic作成
 - completionのatomicity
 - same hash duplicate success
