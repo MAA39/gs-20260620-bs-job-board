@@ -54,33 +54,45 @@ export const Route = createFileRoute('/threads/$id')({
   component: ThreadDetailPage,
 });
 
+/** key={threadId} で全 local state を reset する wrapper */
 function ThreadDetailPage() {
-  const { detail: initial, apiBaseUrl } = Route.useLoaderData();
-  const params = Route.useParams();
-  const { run: searchRunId } = Route.useSearch();
+  const { detail, apiBaseUrl } = Route.useLoaderData();
+  const { id: threadId } = Route.useParams();
+  const { run } = Route.useSearch();
   const navigate = useNavigate();
+
+  return (
+    <ThreadDetailPageContent
+      key={threadId}
+      threadId={threadId}
+      initial={detail}
+      apiBaseUrl={apiBaseUrl}
+      aiRunId={run ?? null}
+      navigate={navigate}
+    />
+  );
+}
+
+type ContentProps = {
+  threadId: string;
+  initial: ThreadDetail;
+  apiBaseUrl: string;
+  aiRunId: string | null;
+  navigate: ReturnType<typeof useNavigate>;
+};
+
+function ThreadDetailPageContent({ threadId, initial, apiBaseUrl, aiRunId, navigate }: ContentProps) {
   const [thread, setThread] = useState(initial);
   const [comment, setComment] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
-  const [aiRunId, setAiRunId] = useState<string | null>(searchRunId ?? null);
 
-  useEffect(() => { setThread(initial); }, [initial]);
-
-  // search.run 変更時に tracked run を同期（別スレッド移動時は null でクリア）
-  useEffect(() => {
-    setAiRunId(searchRunId ?? null);
-  }, [searchRunId]);
-
-  // ── SSE 進捗 ──────────────────────────────────────────
+  // ── SSE 進捗: URL search run が唯一の source of truth ──
   const refreshThread = useCallback(async () => {
-    try { setThread(await fetchDetail({ data: { id: params.id } })); } catch { /* noop */ }
-  }, [params.id]);
+    try { setThread(await fetchDetail({ data: { id: threadId } })); } catch { /* noop */ }
+  }, [threadId]);
 
   const progress = useAiRunProgress(aiRunId, apiBaseUrl, refreshThread);
-
-  // terminal 表示消失バグ修正: aiRunId を null に戻す useEffect は削除済み。
-  // hook は内部で source.close() 済み。aiRunId を保持しても再接続しない。
 
   // ── 5秒ポーリング（他ユーザーの投稿を拾う） ─────────
   useEffect(() => {
@@ -89,7 +101,6 @@ function ThreadDetailPage() {
   }, [refreshThread]);
 
   const [showAuthModal, setShowAuthModal] = useState(false);
-
   const isAuth = typeof window !== 'undefined' && !!localStorage.getItem('bs-user-id');
 
   const handleComment = useCallback(async (e: React.FormEvent) => {
@@ -97,23 +108,20 @@ function ThreadDetailPage() {
     if (!isAuth) { setShowAuthModal(true); return; }
     setSubmitting(true); setError('');
     try {
-      const result = await addComment({ data: { threadId: params.id, body: comment.trim() } });
+      const result = await addComment({ data: { threadId, body: comment.trim() } });
       setComment('');
-      // 新しい ai_run.id → SSE 接続開始 + URL search を replace で反映
-      const newRunId = result.ai_run.id;
-      setAiRunId(newRunId);
-      navigate({
+      // URL search を replace で反映。local state 不要。
+      await navigate({
         to: '/threads/$id',
-        params: { id: params.id },
-        search: { run: newRunId },
+        params: { id: threadId },
+        search: { run: result.ai_run.id },
         replace: true,
       });
-      const fresh = await fetchDetail({ data: { id: params.id } });
-      setThread(fresh);
+      setThread(await fetchDetail({ data: { id: threadId } }));
     } catch (err) {
       setError(err instanceof Error ? err.message : '投稿に失敗しました');
     } finally { setSubmitting(false); }
-  }, [comment, params.id, isAuth, navigate]);
+  }, [comment, threadId, isAuth, navigate]);
 
   const handleAnonAuth = useCallback(async () => {
     try {
@@ -135,9 +143,9 @@ function ThreadDetailPage() {
   }, []);
 
   const handleFix = useCallback(async () => {
-    await fixThread({ data: { threadId: params.id, status: thread.status === 'fixed' ? 'open' : 'fixed' } });
-    setThread(await fetchDetail({ data: { id: params.id } }));
-  }, [thread.status, params.id]);
+    await fixThread({ data: { threadId, status: thread.status === 'fixed' ? 'open' : 'fixed' } });
+    setThread(await fetchDetail({ data: { id: threadId } }));
+  }, [thread.status, threadId]);
 
   const displayItems = useMemo(() => {
     const posts = [...thread.posts].sort((a, b) => a.post_number - b.post_number);
@@ -147,29 +155,21 @@ function ThreadDetailPage() {
     for (const post of posts) {
       if (grouped.has(post.id)) continue;
       if (post.role === 'thinking') continue;
-
       items.push({ type: 'post', post, indent: false });
       grouped.add(post.id);
 
       if (post.author_type === 'human') {
         const children = posts.filter(p => p.source_post_number === post.post_number && p.role !== 'thinking' && !grouped.has(p.id));
-        for (const child of children) {
-          items.push({ type: 'post', post: child, indent: true });
-          grouped.add(child.id);
-        }
+        for (const child of children) { items.push({ type: 'post', post: child, indent: true }); grouped.add(child.id); }
         const nextHuman = posts.find(p => p.author_type === 'human' && p.post_number > post.post_number);
         const ceiling = nextHuman ? nextHuman.post_number : Infinity;
         const orphanChildren = posts.filter(p =>
           !grouped.has(p.id) && p.author_type === 'ai' && p.role !== 'thinking' &&
           p.source_post_number == null && p.post_number > post.post_number && p.post_number < ceiling
         );
-        for (const child of orphanChildren) {
-          items.push({ type: 'post', post: child, indent: true });
-          grouped.add(child.id);
-        }
+        for (const child of orphanChildren) { items.push({ type: 'post', post: child, indent: true }); grouped.add(child.id); }
       }
     }
-
     return items;
   }, [thread.posts]);
 
@@ -196,8 +196,7 @@ function ThreadDetailPage() {
           marginTop: '8px',
           background: progress.status === 'failed' ? '#fff0f0' : '#f0f5ff',
           borderLeft: `3px solid ${progress.status === 'failed' ? '#c00' : '#4a90d9'}`,
-          padding: '8px 12px',
-          fontSize: '0.85rem',
+          padding: '8px 12px', fontSize: '0.85rem',
         }}>
           <span style={{ marginRight: '8px' }}>
             {progress.status === 'generating' || progress.status === 'repairing' ? '🤖' : progress.status === 'failed' ? '⚠️' : progress.status === 'completed' ? '✅' : '⏳'}

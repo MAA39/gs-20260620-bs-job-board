@@ -17,3 +17,8 @@ export type {
   PublicAiRunEvent,
   AiRunProgress,
 } from './api.ts';
+
+export {
+  PUBLIC_AI_ERROR_CODES,
+  PUBLIC_AI_ERROR_CODE_SET,
+} from './api.ts';
