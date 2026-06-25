@@ -23,7 +23,7 @@ packages/
   config/    -> docs/current-v1/packages/config.md
 
 scripts/
-  probe-flue-stream.mjs -> docs/current-v1/scripts/flue-stream-probe.md
+  probe-flue-stream.mjs -> docs/current-v1/scripts/probe-flue-stream.md
 
 .github/workflows/
   ci.yml -> docs/current-v1/repository/build-and-ci.md
