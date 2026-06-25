@@ -87,7 +87,7 @@
 
 をlocalStorageへ保存する。
 
-失敗またはuserを返さない場合はbrowserで`crypto.randomUUID()`を作成し、認証済みとしてlocalStorageへ保存する。これはBetter Auth sessionではない。
+responseにuserがない場合はbrowserで`crypto.randomUUID()`を作成し、認証済みとしてlocalStorageへ保存する。`signIn.anonymous()`自体がthrowした場合のcatchはHome側にないため、その場合はUUID fallbackへ到達しない。
 
 ### reaction
 
@@ -125,6 +125,10 @@ Server Functionが以下を固定値込みで送る。
 ```
 
 clientが`author_type`と`author_name`を指定している。browser側の投稿可否判定はlocalStorageの`bs-user-id`有無だけで行う。
+
+### anonymous認証
+
+Thread detail側は`signIn.anonymous()`をtry/catchし、responseにuserがない場合もthrowした場合もbrowser UUIDをlocalStorageへ保存する。Home側とfailure behaviorが一致していない。
 
 ### status toggle
 
@@ -176,6 +180,7 @@ pnpm --filter @bs-job-board/web deploy
 
 - same-origin API/auth proxyなし
 - browser UUID fallbackあり
+- HomeとThread detailでauth failure behaviorが不一致
 - Server Functionからcookie転送なし
 - client-controlled identityあり
 - reaction response field名不一致
