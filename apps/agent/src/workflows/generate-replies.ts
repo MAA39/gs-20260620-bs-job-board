@@ -115,7 +115,7 @@ export async function run({ payload, env, init }: FlueContext<unknown, Env>): Pr
 
     if (!decoded.ok) throw new SafeWorkflowError('AI_OUTPUT_INVALID');
 
-    const resultHash = await computeHash(decoded.value.replies.join('\n'));
+    const resultHash = await computeHash(JSON.stringify(decoded.value.replies));
 
     // callback: complete (full contract per #11 AC)
     await callbackToApi(env.API, input.aiRunId, 'complete', callbackKey, {

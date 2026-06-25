@@ -13,6 +13,8 @@ export default defineConfig(async () => {
         miniflare: {
           bindings: {
             TEST_MIGRATIONS: migrations,
+            INTERNAL_CALLBACK_KEY: 'test-callback-key-for-integration',
+            BETTER_AUTH_SECRET: 'test-secret',
           },
           workers: [
             {
@@ -24,13 +26,13 @@ export default defineConfig(async () => {
           ],
         },
         wrangler: {
-          configPath: '../../apps/api/wrangler.jsonc',
+          configPath: './wrangler.jsonc',
         },
       }),
     ],
     test: {
       include: ['src/**/*.integration.test.ts'],
-      name: 'db-integration',
+      name: 'api-integration',
       setupFiles: ['src/apply-d1-migrations.integration.ts'],
     },
   };

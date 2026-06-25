@@ -1,5 +1,6 @@
 {
   "name": "bs-job-board-agent",
+  "workers_dev": false,
   "main": "dist/bs_job_board_agent/index.js",
   "compatibility_date": "2026-06-01",
   "compatibility_flags": ["nodejs_compat"],

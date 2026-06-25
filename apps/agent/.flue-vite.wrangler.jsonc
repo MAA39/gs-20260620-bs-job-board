@@ -1,5 +1,6 @@
 {
   "name": "bs-job-board-agent",
+  "workers_dev": false,
   "main": ".flue-vite/_entry.ts",
   "compatibility_date": "2026-06-01",
   "compatibility_flags": [

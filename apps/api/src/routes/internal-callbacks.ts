@@ -38,6 +38,14 @@ const SAFE_ERROR_MESSAGES: Record<string, string> = {
 
 const PROTOCOL_VERSION = '1';
 
+// ── Validation constants ────────────────────────────────
+
+/** Agent contract: exactly 3 replies per callback */
+const EXPECTED_REPLY_COUNT = 3;
+const MIN_REPLY_LENGTH = 5;
+const MAX_REPLY_LENGTH = 200;
+const HEX_HASH_PATTERN = /^[0-9a-f]{64}$/u;
+
 // ── Helpers ─────────────────────────────────────────────
 
 function verifyCallbackKey(
@@ -57,12 +65,25 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
 
+function isSafeNonNegativeInt(v: unknown): v is number {
+  return typeof v === 'number' && Number.isSafeInteger(v) && v >= 0;
+}
+
 async function safeParseJson(c: { req: { json: () => Promise<unknown> } }): Promise<unknown> {
   try {
     return await c.req.json();
   } catch {
     return null;
   }
+}
+
+/** SHA-256 hash of content, returned as 64-char lowercase hex */
+async function computeHash(content: string): Promise<string> {
+  const encoded = new TextEncoder().encode(content);
+  const digest = await crypto.subtle.digest('SHA-256', encoded);
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
 }
 
 // ── Routes ──────────────────────────────────────────────
@@ -115,31 +136,63 @@ export const internalCallbackRoutes = new Hono<{ Bindings: Bindings }>()
     const aiRunId = c.req.param('aiRunId');
     const raw = await safeParseJson(c);
 
-    // payload validation
+    // ── structural validation ──
     if (!isRecord(raw)) {
       return c.json({ error: 'invalid payload: expected JSON object' }, 400);
     }
-    if (typeof raw.resultHash !== 'string' || !raw.resultHash) {
-      return c.json({ error: 'invalid payload: resultHash string required' }, 400);
+
+    // protocolVersion: required
+    if (raw.protocolVersion !== PROTOCOL_VERSION) {
+      return c.json({ error: `invalid payload: protocolVersion "${PROTOCOL_VERSION}" required` }, 400);
     }
-    if (!Array.isArray(raw.replies) || raw.replies.length === 0) {
-      return c.json({ error: 'invalid payload: replies array required' }, 400);
+    // aiRunId: required, must match path
+    if (raw.aiRunId !== aiRunId) {
+      return c.json({ error: 'invalid payload: aiRunId required and must match path' }, 400);
     }
-    for (const reply of raw.replies) {
-      if (!isRecord(reply) || typeof reply.body !== 'string' || !reply.body) {
-        return c.json({ error: 'invalid payload: each reply must have a body string' }, 400);
-      }
-    }
-    if (typeof raw.protocolVersion !== 'undefined' && raw.protocolVersion !== PROTOCOL_VERSION) {
-      return c.json({ error: `unsupported protocol version: expected ${PROTOCOL_VERSION}` }, 400);
+    // resultHash: 64-char hex
+    if (typeof raw.resultHash !== 'string' || !HEX_HASH_PATTERN.test(raw.resultHash)) {
+      return c.json({ error: 'invalid payload: resultHash must be 64-char hex string' }, 400);
     }
 
+    // ── replies validation + normalization ──
+    if (!Array.isArray(raw.replies) || raw.replies.length !== EXPECTED_REPLY_COUNT) {
+      return c.json({ error: `invalid payload: exactly ${EXPECTED_REPLY_COUNT} replies required` }, 400);
+    }
+    const normalizedBodies: string[] = [];
+    for (const reply of raw.replies) {
+      if (!isRecord(reply) || typeof reply.body !== 'string') {
+        return c.json({ error: 'invalid payload: each reply must have a body string' }, 400);
+      }
+      const trimmed = reply.body.trim();
+      if (trimmed.length < MIN_REPLY_LENGTH || trimmed.length > MAX_REPLY_LENGTH) {
+        return c.json({ error: `invalid payload: reply body must be ${MIN_REPLY_LENGTH}-${MAX_REPLY_LENGTH} chars after trim` }, 400);
+      }
+      normalizedBodies.push(trimmed);
+    }
+
+    // ── hash integrity: recompute from normalized bodies ──
+    const expectedHash = await computeHash(JSON.stringify(normalizedBodies));
+    if (raw.resultHash !== expectedHash) {
+      return c.json({ error: 'invalid payload: resultHash does not match reply content' }, 400);
+    }
+
+    // ── usage validation: reject invalid values with 400 ──
+    if (raw.usage !== undefined) {
+      if (!isRecord(raw.usage)) {
+        return c.json({ error: 'invalid payload: usage must be an object' }, 400);
+      }
+      for (const field of ['inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens', 'estimatedCostMicros'] as const) {
+        if (raw.usage[field] !== undefined && !isSafeNonNegativeInt(raw.usage[field])) {
+          return c.json({ error: `invalid payload: usage.${field} must be a non-negative integer` }, 400);
+        }
+      }
+    }
     const usage = isRecord(raw.usage) ? {
-      inputTokens: typeof raw.usage.inputTokens === 'number' ? raw.usage.inputTokens : undefined,
-      outputTokens: typeof raw.usage.outputTokens === 'number' ? raw.usage.outputTokens : undefined,
-      cacheReadTokens: typeof raw.usage.cacheReadTokens === 'number' ? raw.usage.cacheReadTokens : undefined,
-      cacheWriteTokens: typeof raw.usage.cacheWriteTokens === 'number' ? raw.usage.cacheWriteTokens : undefined,
-      estimatedCostMicros: typeof raw.usage.estimatedCostMicros === 'number' ? raw.usage.estimatedCostMicros : undefined,
+      inputTokens: isSafeNonNegativeInt(raw.usage.inputTokens) ? raw.usage.inputTokens : undefined,
+      outputTokens: isSafeNonNegativeInt(raw.usage.outputTokens) ? raw.usage.outputTokens : undefined,
+      cacheReadTokens: isSafeNonNegativeInt(raw.usage.cacheReadTokens) ? raw.usage.cacheReadTokens : undefined,
+      cacheWriteTokens: isSafeNonNegativeInt(raw.usage.cacheWriteTokens) ? raw.usage.cacheWriteTokens : undefined,
+      estimatedCostMicros: isSafeNonNegativeInt(raw.usage.estimatedCostMicros) ? raw.usage.estimatedCostMicros : undefined,
     } : undefined;
 
     try {
@@ -148,9 +201,9 @@ export const internalCallbackRoutes = new Hono<{ Bindings: Bindings }>()
         aiRunId,
         resultHash: raw.resultHash as string,
         completedEventId: crypto.randomUUID(),
-        replies: (raw.replies as Array<{ body: string }>).map((r) => ({
+        replies: normalizedBodies.map((body) => ({
           postId: crypto.randomUUID(),
-          body: r.body,
+          body,
         })),
         usage,
       });
@@ -200,3 +253,6 @@ export const internalCallbackRoutes = new Hono<{ Bindings: Bindings }>()
       throw error;
     }
   });
+
+/** Exported for tests to compute canonical hashes */
+export { computeHash };
