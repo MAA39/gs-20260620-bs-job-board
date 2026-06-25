@@ -27,7 +27,7 @@ const createThreadAction = createServerFn({ method: 'POST' })
   .validator((input: { title: string; body: string }) => input)
   .handler(async ({ data }) => {
     const api = await getApi();
-    return (await (await api('/api/v1/threads', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) })).json()) as { id: string };
+    return (await (await api('/api/v1/threads', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) })).json()) as { id: string; ai_run: { id: string } };
   });
 
 const reactAction = createServerFn({ method: 'POST' })
@@ -97,10 +97,7 @@ function HomePage() {
     try {
         const result = await createThreadAction({ data: { title: title.trim(), body: body.trim() } });
         setTitle(''); setBody('');
-        // 作成したスレッドの詳細に遷移（SSEで生成過程を見る）
-        const fresh = await fetchThreads({ data: { sort: 'new' } });
-        if (fresh.length > 0) { navigate({ to: '/threads/$id', params: { id: fresh[0].id } }); }
-        else { setThreads(await fetchThreads({ data: { sort } })); }
+        navigate({ to: '/threads/$id', params: { id: result.id } });
       }
     finally { setSubmitting(false); }
   }, [title, body, sort]);
@@ -114,10 +111,7 @@ function HomePage() {
       try {
         const result = await createThreadAction({ data: { title: title.trim(), body: body.trim() } });
         setTitle(''); setBody('');
-        // 作成したスレッドの詳細に遷移（SSEで生成過程を見る）
-        const fresh = await fetchThreads({ data: { sort: 'new' } });
-        if (fresh.length > 0) { navigate({ to: '/threads/$id', params: { id: fresh[0].id } }); }
-        else { setThreads(await fetchThreads({ data: { sort } })); }
+        navigate({ to: '/threads/$id', params: { id: result.id } });
       }
       finally { setSubmitting(false); }
     }
