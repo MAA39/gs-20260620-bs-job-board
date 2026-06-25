@@ -7,10 +7,14 @@ import type {
   CompleteRunAtomicResult,
   CompleteRunUsageInput,
   CreateQueuedRunInput,
+  CreateThreadWithQueuedRunInput,
+  CreateThreadWithQueuedRunResult,
   D1BatchResultLike,
   D1DatabaseClient,
   D1PreparedStatementLike,
   FailRunInput,
+  InsertHumanPostWithQueuedRunInput,
+  InsertHumanPostWithQueuedRunResult,
   MarkRunGeneratingInput,
   TransitionRunInput,
 } from './types.ts';
@@ -642,4 +646,181 @@ const selectPostIdsForRun = async <
     .all<{ post_id: string }>();
 
   return result.results.map((row) => row.post_id);
+};
+
+// ── Phase 2A-2: Atomic thread/post + queued run ─────────
+
+/**
+ * thread 作成 + initial human post + queued AI run + queued event を
+ * 同じ D1 batch で原子的に作成する。
+ *
+ * stage='initial' は固定。source_post_id = initial post ID。
+ */
+export const createThreadWithInitialPostAndQueuedRun = async <
+  TStatement extends D1PreparedStatementLike = D1PreparedStatementLike,
+>(
+  input: CreateThreadWithQueuedRunInput<TStatement>,
+): Promise<CreateThreadWithQueuedRunResult> => {
+  const { db, thread, post, aiRun } = input;
+
+  await withConflictMapping(
+    () =>
+      db.batch([
+        db
+          .prepare(
+            'INSERT INTO threads (id, title, body) VALUES (?, ?, ?)',
+          )
+          .bind(thread.id, thread.title, thread.body),
+        db
+          .prepare(
+            [
+              'INSERT INTO posts',
+              '(id, thread_id, post_number, author_type, author_name, body, user_id)',
+              "VALUES (?, ?, 1, 'human', ?, ?, ?)",
+            ].join(' '),
+          )
+          .bind(post.id, thread.id, post.authorName, thread.body, post.userId),
+        db
+          .prepare(
+            [
+              'INSERT INTO ai_runs',
+              '(id, thread_id, source_post_id, idempotency_key,',
+              "stage, status, model, prompt_version)",
+              "VALUES (?, ?, ?, ?, 'initial', 'queued', ?, ?)",
+            ].join(' '),
+          )
+          .bind(
+            aiRun.id,
+            thread.id,
+            post.id,
+            aiRun.idempotencyKey,
+            aiRun.model,
+            aiRun.promptVersion,
+          ),
+        // queued event: run INSERT 成功時のみ
+        db
+          .prepare(
+            [
+              'INSERT INTO ai_run_events',
+              '(id, ai_run_id, sequence, event_type, data_json)',
+              'SELECT ?, ?, 1, ?, ?',
+              'WHERE changes() > 0',
+            ].join(' '),
+          )
+          .bind(
+            input.queuedEventId,
+            aiRun.id,
+            'status',
+            jsonData({ status: 'queued' }),
+          ),
+      ]),
+    'ai_run idempotency key conflicts with an existing run',
+  );
+
+  return {
+    threadId: thread.id,
+    firstPostId: post.id,
+    aiRunId: aiRun.id,
+  };
+};
+
+/**
+ * human 返信 + queued AI run (deep_dive) + queued event を
+ * 同じ D1 batch で原子的に作成する。
+ *
+ * stage='deep_dive' は固定。source_post_id = 新 human post ID。
+ * post_number は MAX+1 で自動採番。
+ */
+export const insertHumanPostWithQueuedRun = async <
+  TStatement extends D1PreparedStatementLike = D1PreparedStatementLike,
+>(
+  input: InsertHumanPostWithQueuedRunInput<TStatement>,
+): Promise<InsertHumanPostWithQueuedRunResult> => {
+  const { db, post, aiRun } = input;
+
+  const results = await withConflictMapping(
+    () =>
+      db.batch([
+        db
+          .prepare(
+            [
+              'INSERT INTO posts',
+              '(id, thread_id, post_number, author_type, author_name, body, user_id)',
+              "SELECT ?, ?,",
+              "(SELECT COALESCE(MAX(post_number), 0) + 1 FROM posts WHERE thread_id = ?),",
+              "'human', ?, ?, ?",
+              // thread 存在検証
+              "WHERE EXISTS (SELECT 1 FROM threads WHERE id = ?)",
+            ].join(' '),
+          )
+          .bind(
+            post.id,
+            post.threadId,
+            post.threadId,
+            post.authorName,
+            post.body,
+            post.userId,
+            post.threadId,
+          ),
+        db
+          .prepare(
+            [
+              'INSERT INTO ai_runs',
+              '(id, thread_id, source_post_id, idempotency_key,',
+              "stage, status, model, prompt_version)",
+              'SELECT ?, ?, ?, ?,',
+              "'deep_dive', 'queued', ?, ?",
+              // post INSERT 成功時のみ
+              'WHERE changes() > 0',
+            ].join(' '),
+          )
+          .bind(
+            aiRun.id,
+            post.threadId,
+            post.id,
+            aiRun.idempotencyKey,
+            aiRun.model,
+            aiRun.promptVersion,
+          ),
+        // queued event: run INSERT 成功時のみ
+        db
+          .prepare(
+            [
+              'INSERT INTO ai_run_events',
+              '(id, ai_run_id, sequence, event_type, data_json)',
+              'SELECT ?, ?, 1, ?, ?',
+              'WHERE changes() > 0',
+            ].join(' '),
+          )
+          .bind(
+            input.queuedEventId,
+            aiRun.id,
+            'status',
+            jsonData({ status: 'queued' }),
+          ),
+        // post_number + thread title 取得用
+        db
+          .prepare(
+            'SELECT p.post_number, t.title FROM posts p JOIN threads t ON p.thread_id = t.id WHERE p.id = ?',
+          )
+          .bind(post.id),
+      ]),
+    'ai_run idempotency key conflicts with an existing run',
+  );
+
+  const postRow = results[3]?.results?.[0] as
+    | { post_number: number; title: string }
+    | undefined;
+  if (postRow === undefined) {
+    throw new Error(
+      `thread '${post.threadId}' not found or post insertion failed`,
+    );
+  }
+
+  return {
+    postId: post.id,
+    postNumber: postRow.post_number,
+    threadTitle: postRow.title,
+    aiRunId: aiRun.id,
+  };
 };

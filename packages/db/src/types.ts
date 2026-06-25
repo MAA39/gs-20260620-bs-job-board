@@ -207,3 +207,53 @@ export type AiGenerationContext = {
     parent_post_id: string | null;
   }>;
 };
+
+// ── Phase 2A-2: Atomic thread/post + queued run ─────────
+
+export type CreateThreadWithQueuedRunInput<
+  TStatement extends D1PreparedStatementLike = D1PreparedStatementLike,
+> = {
+  db: D1DatabaseClient<TStatement>;
+  thread: { id: string; title: string; body: string };
+  post: { id: string; authorName: string; userId: string | null };
+  aiRun: {
+    id: string;
+    idempotencyKey: string;
+    model: string;
+    promptVersion: string;
+  };
+  queuedEventId: string;
+};
+
+export type CreateThreadWithQueuedRunResult = {
+  threadId: string;
+  firstPostId: string;
+  aiRunId: string;
+};
+
+export type InsertHumanPostWithQueuedRunInput<
+  TStatement extends D1PreparedStatementLike = D1PreparedStatementLike,
+> = {
+  db: D1DatabaseClient<TStatement>;
+  post: {
+    id: string;
+    threadId: string;
+    authorName: string;
+    body: string;
+    userId: string | null;
+  };
+  aiRun: {
+    id: string;
+    idempotencyKey: string;
+    model: string;
+    promptVersion: string;
+  };
+  queuedEventId: string;
+};
+
+export type InsertHumanPostWithQueuedRunResult = {
+  postId: string;
+  postNumber: number;
+  threadTitle: string;
+  aiRunId: string;
+};

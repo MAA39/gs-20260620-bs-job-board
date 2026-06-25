@@ -29,6 +29,10 @@ export type {
   CompleteRunAtomicInput,
   CompleteRunAtomicResult,
   FailRunInput,
+  CreateThreadWithQueuedRunInput,
+  CreateThreadWithQueuedRunResult,
+  InsertHumanPostWithQueuedRunInput,
+  InsertHumanPostWithQueuedRunResult,
 } from './types.ts';
 
 export { DbConflictError, InvalidTransitionError } from './types.ts';
