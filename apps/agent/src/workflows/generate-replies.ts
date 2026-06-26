@@ -107,10 +107,22 @@ export async function run({ payload, env, init }: FlueContext<unknown, Env>): Pr
     const harness = await init(replyAgent);
     const session = await harness.session();
 
+    // #39: usage累積変数（repair時に上書きされないよう加算で管理）
+    const totalUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+
+    const accumulateUsage = (usage: Partial<typeof totalUsage> | undefined) => {
+      if (!usage) return;
+      totalUsage.input += nonNegative(usage.input);
+      totalUsage.output += nonNegative(usage.output);
+      totalUsage.cacheRead += nonNegative(usage.cacheRead);
+      totalUsage.cacheWrite += nonNegative(usage.cacheWrite);
+    };
+
     let response = await session.prompt(buildPrompt(input), {
       signal: AbortSignal.timeout(TIMEOUT_MS),
       thinkingLevel: 'minimal',
     });
+    accumulateUsage(response.usage);
     let decoded = decodeReplies(response.text);
 
     if (!decoded.ok) {
@@ -121,6 +133,7 @@ export async function run({ payload, env, init }: FlueContext<unknown, Env>): Pr
         signal: AbortSignal.timeout(TIMEOUT_MS),
         thinkingLevel: 'minimal',
       });
+      accumulateUsage(response.usage);
       decoded = decodeReplies(response.text);
     }
 
@@ -140,9 +153,12 @@ export async function run({ payload, env, init }: FlueContext<unknown, Env>): Pr
       model: `${response.model?.provider || PROVIDER_ID}/${response.model?.id || modelId}`,
       resultHash,
       replies: decoded.value.replies.map((body) => ({ body })),
+      // #39: 累積usage + cache tokens
       usage: {
-        inputTokens: nonNegative(response.usage?.input),
-        outputTokens: nonNegative(response.usage?.output),
+        inputTokens: totalUsage.input,
+        outputTokens: totalUsage.output,
+        cacheReadTokens: totalUsage.cacheRead,
+        cacheWriteTokens: totalUsage.cacheWrite,
       },
     });
 
@@ -153,8 +169,8 @@ export async function run({ payload, env, init }: FlueContext<unknown, Env>): Pr
         id: response.model?.id || modelId,
       },
       usage: {
-        input: nonNegative(response.usage?.input),
-        output: nonNegative(response.usage?.output),
+        input: totalUsage.input,
+        output: totalUsage.output,
       },
     };
   } catch (error) {
