@@ -255,7 +255,7 @@ function ThreadDetailPageContent({ threadId, initial, aiRunId, navigate }: Conte
   const displayItems = useMemo(() => {
     const posts = [...thread.posts].sort((a, b) => a.post_number - b.post_number);
 
-    // source_post_number → 子レスのMap（O(n²)の filter → O(1) ルックアップ）
+    // source_post_number → 子レスのMap（O(1) ルックアップ）
     const childrenBySource = new Map<number, Post[]>();
     for (const p of posts) {
       if (p.source_post_number != null && p.role !== 'thinking') {
@@ -267,18 +267,21 @@ function ThreadDetailPageContent({ threadId, initial, aiRunId, navigate }: Conte
 
     const grouped = new Set<string>();
     const items: Array<{ type: 'post'; post: Post; indent: boolean }> = [];
-    const humanNumbers = posts.filter(p => p.author_type === 'human').map(p => p.post_number);
 
-    for (const post of posts) {
+    for (let i = 0; i < posts.length; i++) {
+      const post = posts[i];
       if (grouped.has(post.id) || post.role === 'thinking') continue;
       items.push({ type: 'post', post, indent: false }); grouped.add(post.id);
       if (post.author_type === 'human') {
+        // source_post_numberで紐づく子レス（Map O(1)）
         for (const c of childrenBySource.get(post.post_number) ?? []) {
           if (!grouped.has(c.id)) { items.push({ type: 'post', post: c, indent: true }); grouped.add(c.id); }
         }
-        const ceil = humanNumbers.find(n => n > post.post_number) ?? Infinity;
-        for (const c of posts) {
-          if (!grouped.has(c.id) && c.author_type === 'ai' && c.role !== 'thinking' && c.source_post_number == null && c.post_number > post.post_number && c.post_number < ceil) {
+        // orphan AI posts: 次のhumanまで前方スキャン（O(区間)、全体O(n)）
+        for (let j = i + 1; j < posts.length; j++) {
+          const c = posts[j];
+          if (c.author_type === 'human') break;
+          if (!grouped.has(c.id) && c.author_type === 'ai' && c.role !== 'thinking' && c.source_post_number == null) {
             items.push({ type: 'post', post: c, indent: true }); grouped.add(c.id);
           }
         }
