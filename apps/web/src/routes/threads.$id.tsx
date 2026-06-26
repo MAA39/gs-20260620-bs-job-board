@@ -37,7 +37,11 @@ const fixThread = createServerFn({ method: 'POST' }).validator((i: { threadId: s
   .handler(async ({ data }) => {
     const api = await getApi();
     const r = await api(`/api/v1/threads/${data.threadId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: data.status }) });
-    if (!r.ok) throw new Error(`status update failed: ${r.status}`);
+    try {
+      if (!r.ok) throw new Error(`status update failed: ${r.status}`);
+    } finally {
+      await r.body?.cancel().catch(() => undefined);
+    }
   });
 
 // ── Run search validation ───────────────────────────────
@@ -181,13 +185,18 @@ function ThreadDetailPageContent({ threadId, initial, apiBaseUrl, aiRunId, navig
     setShowAuthModal(false);
   }, []);
 
+  const fixingRef = useRef(false);
   const handleFix = useCallback(async () => {
+    if (fixingRef.current) return;
+    fixingRef.current = true;
     try {
       setError('');
       await fixThread({ data: { threadId, status: thread.status === 'fixed' ? 'open' : 'fixed' } });
       await refreshThread();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'スレッドの状態更新に失敗しました');
+    } finally {
+      fixingRef.current = false;
     }
   }, [thread.status, threadId, refreshThread]);
 
