@@ -29,7 +29,7 @@ const createThreadAction = createServerFn({ method: 'POST' })
       body: JSON.stringify(data),
     });
     if (!r.ok) {
-      const errBody = await r.json().catch(() => ({ error: 'unknown' })) as { error?: string };
+      const errBody = await r.json().catch(() => ({})) as { error?: string };
       throw new Error(errBody.error ?? `create thread failed: ${r.status}`);
     }
     return (await r.json()) as CreateThreadResponse;
@@ -160,6 +160,9 @@ function HomePage() {
           const result = await createThreadAction({ data: { title: title.trim(), body: body.trim() } });
           setTitle(''); setBody('');
           navigate({ to: '/threads/$id', params: { id: result.id }, search: { run: result.ai_run.id } });
+        } catch (postError) {
+          setAuthError(postError instanceof Error ? postError.message : '投稿に失敗しました。もう一度お試しください。');
+          setShowAuthModal(true);
         } finally { setSubmitting(false); }
       }
       setPendingAction(null);

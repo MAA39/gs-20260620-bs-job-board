@@ -66,8 +66,9 @@ export async function getIncomingAuthHeaders(): Promise<{
     return {
       cookie: request.headers.get('cookie'),
       authorization: request.headers.get('authorization'),
-      forwardedHost: url.host,
-      forwardedProto: url.protocol.replace(':', ''),
+      // 既存の x-forwarded-* があれば上流proxyからの値を優先
+      forwardedHost: request.headers.get('x-forwarded-host') ?? url.host,
+      forwardedProto: request.headers.get('x-forwarded-proto') ?? url.protocol.replace(':', ''),
     };
   } catch {
     return { cookie: null, authorization: null, forwardedHost: null, forwardedProto: null };

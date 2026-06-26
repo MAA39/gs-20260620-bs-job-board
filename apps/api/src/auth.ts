@@ -51,7 +51,16 @@ export function resolveExternalBaseURL(
 ): string {
   const forwardedHost = request.headers.get('x-forwarded-host');
   if (!forwardedHost) return fallbackBaseURL;
+
+  // Service Binding 内部 origin からのリクエストのみ forwarded headers を信じる
+  // 外部から直接 API Worker を叩いた場合は偽装防止のため fallback を使う
+  const fallbackHostname = new URL(fallbackBaseURL).hostname;
+  const TRUSTED_INTERNAL = new Set(['api', 'localhost', '127.0.0.1']);
+  if (!TRUSTED_INTERNAL.has(fallbackHostname)) return fallbackBaseURL;
+
   const forwardedProto = request.headers.get('x-forwarded-proto') ?? 'https';
+  if (forwardedProto !== 'http' && forwardedProto !== 'https') return fallbackBaseURL;
+
   return `${forwardedProto}://${forwardedHost}`;
 }
 

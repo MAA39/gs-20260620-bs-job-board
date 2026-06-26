@@ -14,7 +14,6 @@ import {
   getAiGenerationContext,
 } from '@bs-job-board/db/ai-pipeline';
 import { getSessionResult } from '../auth.ts';
-import type { SessionResult } from '../auth.ts';
 
 // ── Constants ───────────────────────────────────────────
 
@@ -234,7 +233,29 @@ export const threadRoutes = new Hono<{ Bindings: Bindings }>()
       return context.json({ error: 'authentication required' }, 401);
     }
 
-    const input = await context.req.json<{ title: string; body: string }>();
+    const input = await context.req.json<Record<string, unknown>>().catch(() => null);
+    if (!input || typeof input !== 'object') {
+      return context.json({ error: 'invalid JSON body' }, 400);
+    }
+
+    const ALLOWED_FIELDS = new Set(['title', 'body']);
+    const unexpected = Object.keys(input).filter((k) => !ALLOWED_FIELDS.has(k));
+    if (unexpected.length > 0) {
+      return context.json(
+        { error: `unexpected fields: ${unexpected.join(', ')}` },
+        400,
+      );
+    }
+
+    const { title, body } = input as { title: unknown; body: unknown };
+    if (typeof title !== 'string' || typeof body !== 'string') {
+      return context.json({ error: 'title and body must be strings' }, 400);
+    }
+    const trimmedTitle = title.trim();
+    const trimmedBody = body.trim();
+    if (!trimmedTitle || !trimmedBody) {
+      return context.json({ error: 'title and body must not be empty' }, 400);
+    }
 
     const authorName =
       session.user.name && session.user.name !== 'Anonymous'
@@ -253,7 +274,7 @@ export const threadRoutes = new Hono<{ Bindings: Bindings }>()
     // thread + initial post + queued run を原子的に作成
     await createThreadWithInitialPostAndQueuedRun({
       db: context.env.DB as unknown as Parameters<typeof createThreadWithInitialPostAndQueuedRun>[0]['db'],
-      thread: { id: threadId, title: input.title, body: input.body },
+      thread: { id: threadId, title: trimmedTitle, body: trimmedBody },
       post: { id: postId, authorName, userId: session.user.id },
       aiRun: {
         id: aiRunId,

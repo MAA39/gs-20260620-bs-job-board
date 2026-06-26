@@ -39,6 +39,7 @@ const makeExecutionCtx = () => {
 /**
  * anonymous sign-in して session cookie を取得する。
  * #29: テスト内で Better Auth session を作るヘルパー。
+ * 複数 Set-Cookie 対応: getAll → getSetCookie → get fallback。
  */
 const getAnonymousSessionCookie = async (): Promise<string> => {
   const { ctx, pending } = makeExecutionCtx();
@@ -56,13 +57,31 @@ const getAnonymousSessionCookie = async (): Promise<string> => {
   if (res.status !== 200) {
     throw new Error(`anonymous sign-in failed: ${res.status} ${await res.text()}`);
   }
-  // Set-Cookie から session cookie を取得
-  const setCookie = res.headers.get('set-cookie') ?? '';
-  if (!setCookie) {
-    throw new Error('no Set-Cookie in sign-in response');
+  // 複数 Set-Cookie に対応: getAll → getSetCookie → get fallback
+  const h = res.headers as Headers & {
+    getAll?: (name: string) => string[];
+    getSetCookie?: () => string[];
+  };
+  let cookies: string[] = [];
+  if (typeof h.getAll === 'function') {
+    cookies = h.getAll('Set-Cookie');
+  } else if (typeof h.getSetCookie === 'function') {
+    cookies = h.getSetCookie();
+  } else {
+    const single = res.headers.get('set-cookie');
+    cookies = single ? [single] : [];
   }
-  // cookie name=value 部分だけ抽出（; 以降は属性）
-  return setCookie.split(';')[0];
+  // better-auth.session_token= を含む cookie を探す
+  const sessionCookie = cookies
+    .map((c) => c.split(';')[0])
+    .find((c) => c.startsWith('better-auth.session_token='));
+  if (!sessionCookie) {
+    // fallback: 最初の cookie を使う
+    const first = cookies[0]?.split(';')[0];
+    if (!first) throw new Error('no Set-Cookie in sign-in response');
+    return first;
+  }
+  return sessionCookie;
 };
 
 const postComment = async (

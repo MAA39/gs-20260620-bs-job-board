@@ -13,6 +13,8 @@
 
 ## Deploy 前 Smoke Test
 
+> 各テスト前に DevTools → Application → Clear site data でcookie/localStorageをクリアしてから実行。
+
 1. **anonymous sign-in → Set-Cookie 確認**
    - ブラウザ DevTools Network tab
    - `/api/auth/sign-in/anonymous` へのリクエストが same-origin であること

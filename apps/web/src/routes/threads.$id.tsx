@@ -26,7 +26,7 @@ const addComment = createServerFn({ method: 'POST' }).validator((i: { threadId: 
       body: JSON.stringify({ body: data.body }),
     });
     if (!r.ok) {
-      const errBody = await r.json().catch(() => ({ error: 'unknown' })) as { error?: string };
+      const errBody = await r.json().catch(() => ({})) as { error?: string };
       throw new Error(errBody.error ?? `post failed: ${r.status}`);
     }
     return (await r.json()) as CreatePostResponse;
