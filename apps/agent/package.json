@@ -9,12 +9,12 @@
     "deploy": "flue deploy"
   },
   "dependencies": {
-    "@flue/runtime": "^1.0.0-beta.2",
+    "@flue/runtime": "1.0.0-beta.2",
     "agents": "^0.16.2",
     "hono": "^4.12.0"
   },
   "devDependencies": {
-    "@flue/cli": "^1.0.0-beta.1",
+    "@flue/cli": "1.0.0-beta.1",
     "@cloudflare/workers-types": "^4.20250620.0"
   }
 }
