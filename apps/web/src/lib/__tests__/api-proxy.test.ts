@@ -41,17 +41,28 @@ describe('proxyApiRequest', () => {
     expect(response.status).toBe(200);
   });
 
-  test('preserves POST method and body', async () => {
-    const api = fakeApi((_url, init) => {
+  test('preserves POST method and body is readable upstream', async () => {
+    let receivedBody = '';
+    const api = fakeApi(async (_url, init) => {
+      if (init?.body) {
+        // body が ReadableStream の場合も対応
+        if (typeof init.body === 'string') {
+          receivedBody = init.body;
+        } else {
+          receivedBody = await new Response(init.body).text();
+        }
+      }
       return new Response(JSON.stringify({ received: true }), { status: 201 });
     });
+    const payload = JSON.stringify({ title: 'test', body: 'hello' });
     const request = makeRequest('/api/v1/threads', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title: 'test', body: 'hello' }),
+      body: payload,
     });
     const response = await proxyApiRequest(request, api, 'v1/threads');
     expect(response.status).toBe(201);
+    expect(receivedBody).toBe(payload);
   });
 
   test('preserves Cookie header', async () => {
@@ -68,7 +79,7 @@ describe('proxyApiRequest', () => {
     expect(receivedCookie).toBe('better-auth.session_token=abc123');
   });
 
-  test('preserves Set-Cookie from upstream', async () => {
+  test('preserves single Set-Cookie from upstream', async () => {
     const api = fakeApi(() => {
       return new Response('ok', {
         status: 200,
@@ -78,6 +89,22 @@ describe('proxyApiRequest', () => {
     const request = makeRequest('/api/auth/sign-in');
     const response = await proxyApiRequest(request, api, 'auth/sign-in');
     expect(response.headers.get('set-cookie')).toContain('better-auth.session_token=xyz789');
+  });
+
+  test('preserves multiple Set-Cookie values individually', async () => {
+    const api = fakeApi(() => {
+      const headers = new Headers();
+      headers.append('Set-Cookie', 'token=aaa; Path=/; HttpOnly');
+      headers.append('Set-Cookie', 'csrf=bbb; Path=/; SameSite=Strict');
+      headers.append('Content-Type', 'application/json');
+      return new Response('ok', { status: 200, headers });
+    });
+    const request = makeRequest('/api/auth/sign-in');
+    const response = await proxyApiRequest(request, api, 'auth/sign-in');
+    // 複数 Set-Cookie が返されること（環境によって結合されるが、少なくとも両方の値を含む）
+    const cookies = response.headers.get('set-cookie') ?? '';
+    expect(cookies).toContain('token=aaa');
+    expect(cookies).toContain('csrf=bbb');
   });
 
   test('preserves upstream status code', async () => {
@@ -108,15 +135,40 @@ describe('proxyApiRequest', () => {
     expect(headers?.get('host')).toBeNull();
   });
 
-  test('passes through SSE content-type', async () => {
+  test('sets X-Forwarded-Host and X-Forwarded-Proto', async () => {
+    let headers: Headers | undefined;
+    const api = fakeApi((_url, init) => {
+      headers = new Headers(init?.headers);
+      return new Response('ok');
+    });
+    const request = makeRequest('/api/v1/threads');
+    await proxyApiRequest(request, api, 'v1/threads');
+    expect(headers?.get('x-forwarded-host')).toBe('web.example.com');
+    expect(headers?.get('x-forwarded-proto')).toBe('https');
+  });
+
+  test('passes through SSE content-type without buffering', async () => {
+    const sseBody = 'data: {"status":"generating"}\n\ndata: {"status":"completed"}\n\n';
     const api = fakeApi(() => {
-      return new Response('data: test\n\n', {
+      return new Response(sseBody, {
         status: 200,
-        headers: { 'Content-Type': 'text/event-stream' },
+        headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' },
       });
     });
     const request = makeRequest('/api/v1/ai-runs/123/events');
     const response = await proxyApiRequest(request, api, 'v1/ai-runs/123/events');
     expect(response.headers.get('content-type')).toBe('text/event-stream');
+    // body がそのまま返されること（buffer parse されていない）
+    const text = await response.text();
+    expect(text).toBe(sseBody);
+  });
+
+  test('upstream fetch throw → proxyApiRequest throws (caller handles 503)', async () => {
+    const api = {
+      fetch: vi.fn(() => Promise.reject(new Error('Service Binding unavailable'))),
+    };
+    const request = makeRequest('/api/v1/threads');
+    // proxyApiRequest 自体は throw する。503 は route 側の責務。
+    await expect(proxyApiRequest(request, api, 'v1/threads')).rejects.toThrow();
   });
 });

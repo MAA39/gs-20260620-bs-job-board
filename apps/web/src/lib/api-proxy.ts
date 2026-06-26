@@ -33,15 +33,40 @@ function buildUpstreamHeaders(incoming: Headers): Headers {
   return out;
 }
 
+/**
+ * 複数 Set-Cookie を安全に取得する。
+ * Cloudflare Workers: Headers.getAll("Set-Cookie") 優先
+ * WinterCG/Browser: Headers.getSetCookie() fallback
+ * 最終fallback: headers.get("set-cookie") (カンマ結合リスクあり)
+ */
+function getSetCookieValues(headers: Headers): string[] {
+  const h = headers as Headers & {
+    getAll?: (name: string) => string[];
+    getSetCookie?: () => string[];
+  };
+  if (typeof h.getAll === 'function') {
+    return h.getAll('Set-Cookie');
+  }
+  if (typeof h.getSetCookie === 'function') {
+    return h.getSetCookie();
+  }
+  const single = headers.get('set-cookie');
+  return single ? [single] : [];
+}
+
 /** upstream Response から client 向け Response を組み立てる */
 function buildDownstreamResponse(upstream: Response): Response {
   const headers = new Headers();
-  // Set-Cookie は getSetCookie() で複数値を保持する
+  // set-cookie は forEach から除外し、getSetCookieValues で個別 append
   upstream.headers.forEach((value, key) => {
+    if (key.toLowerCase() === 'set-cookie') return;
     if (!HOP_BY_HOP.has(key.toLowerCase())) {
       headers.append(key, value);
     }
   });
+  for (const cookie of getSetCookieValues(upstream.headers)) {
+    headers.append('set-cookie', cookie);
+  }
   return new Response(upstream.body, {
     status: upstream.status,
     statusText: upstream.statusText,

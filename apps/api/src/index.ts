@@ -3,7 +3,7 @@ import { cors } from 'hono/cors';
 import { threadRoutes } from './routes/threads.ts';
 import { internalCallbackRoutes } from './routes/internal-callbacks.ts';
 import { aiRunEventRoutes } from './routes/ai-run-events.ts';
-import { createAuth } from './auth.ts';
+import { createAuth, resolveExternalBaseURL } from './auth.ts';
 
 type Bindings = {
   DB: D1Database;
@@ -29,12 +29,7 @@ app.on(['POST', 'GET'], '/api/auth/**', async (c) => {
   if (!c.env?.BETTER_AUTH_SECRET?.trim()) {
     return c.json({ error: 'service not configured' }, 503);
   }
-  // #29: reverse proxy 経由の場合、X-Forwarded-Host から元の origin を復元する
-  const forwardedHost = c.req.header('x-forwarded-host');
-  const forwardedProto = c.req.header('x-forwarded-proto') ?? 'https';
-  const baseURL = forwardedHost
-    ? `${forwardedProto}://${forwardedHost}`
-    : new URL(c.req.url).origin;
+  const baseURL = resolveExternalBaseURL(c.req.raw, new URL(c.req.url).origin);
   const auth = createAuth(c.env.DB, {
     secret: c.env.BETTER_AUTH_SECRET,
     baseURL,

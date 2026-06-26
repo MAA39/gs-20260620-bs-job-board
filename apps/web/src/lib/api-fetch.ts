@@ -4,8 +4,8 @@
  * Service Binding (env.API) を使い、必要に応じて
  * incoming request の Cookie/Authorization を転送する。
  *
- * #29: mutation 系 serverFn では forwardAuth: true で使う。
- *      GET 系 public route では省略可。
+ * #29: mutation 系 serverFn では getAuthenticatedApi() で使う。
+ *      GET 系 public route では getApi() を直接使う。
  */
 
 type ApiFn = (url: string, init?: RequestInit) => Promise<Response>;
@@ -15,16 +15,22 @@ type ApiFn = (url: string, init?: RequestInit) => Promise<Response>;
  *
  * @param options.cookie  - 転送する Cookie header 値
  * @param options.authorization - 転送する Authorization header 値
+ * @param options.forwardedHost - X-Forwarded-Host (元のWeb origin復元用)
+ * @param options.forwardedProto - X-Forwarded-Proto
  */
 export async function getApi(options?: {
   cookie?: string | null;
   authorization?: string | null;
+  forwardedHost?: string | null;
+  forwardedProto?: string | null;
 }): Promise<ApiFn> {
-  const injectAuth = (init?: RequestInit): RequestInit => {
-    if (!options?.cookie && !options?.authorization) return init ?? {};
+  const injectHeaders = (init?: RequestInit): RequestInit => {
+    if (!options) return init ?? {};
     const headers = new Headers(init?.headers);
     if (options.cookie) headers.set('cookie', options.cookie);
     if (options.authorization) headers.set('authorization', options.authorization);
+    if (options.forwardedHost) headers.set('x-forwarded-host', options.forwardedHost);
+    if (options.forwardedProto) headers.set('x-forwarded-proto', options.forwardedProto);
     return { ...init, headers };
   };
 
@@ -33,44 +39,46 @@ export async function getApi(options?: {
       env: { API: { fetch: typeof fetch } };
     };
     return (url: string, init?: RequestInit) =>
-      env.API.fetch(`https://api${url}`, injectAuth(init));
+      env.API.fetch(`https://api${url}`, injectHeaders(init));
   } catch {
     return (url: string, init?: RequestInit) =>
-      fetch(`http://localhost:8787${url}`, injectAuth(init));
+      fetch(`http://localhost:8787${url}`, injectHeaders(init));
   }
 }
 
 /**
- * serverFn handler 内で incoming request の auth headers を取得する。
+ * serverFn handler 内で incoming request の auth headers + origin を取得する。
  *
  * TanStack Start v1 では getRequest() from '@tanstack/react-start/server'
  * で元のブラウザリクエストにアクセスできる。
+ * ESM/Cloudflare Workers 環境のため await import() を使う。
  */
-export function getIncomingAuthHeaders(): {
+export async function getIncomingAuthHeaders(): Promise<{
   cookie: string | null;
   authorization: string | null;
-} {
+  forwardedHost: string | null;
+  forwardedProto: string | null;
+}> {
   try {
-    // Dynamic import to avoid build errors in non-server contexts
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { getRequest } = require('@tanstack/react-start/server') as {
-      getRequest: () => Request;
-    };
-    const request = getRequest();
+    const { getRequest } = await import('@tanstack/react-start/server');
+    const request = getRequest() as Request;
+    const url = new URL(request.url);
     return {
       cookie: request.headers.get('cookie'),
       authorization: request.headers.get('authorization'),
+      forwardedHost: url.host,
+      forwardedProto: url.protocol.replace(':', ''),
     };
   } catch {
-    return { cookie: null, authorization: null };
+    return { cookie: null, authorization: null, forwardedHost: null, forwardedProto: null };
   }
 }
 
 /**
- * 認証ヘッダーを転送する API fetch 関数を返す。
+ * 認証ヘッダー + X-Forwarded-* を転送する API fetch 関数を返す。
  * mutation 系 serverFn で使う。
  */
 export async function getAuthenticatedApi(): Promise<ApiFn> {
-  const auth = getIncomingAuthHeaders();
+  const auth = await getIncomingAuthHeaders();
   return getApi(auth);
 }
