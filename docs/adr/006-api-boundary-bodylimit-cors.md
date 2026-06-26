@@ -19,7 +19,7 @@ app.use('*', cors({ ... }));
 
 **bodyLimit が未設定。**
 
-全mutation routeがJSON bodyを上限なしで読み込む。Cloudflare Workersには128MB上限があるが、それまでは何でも受け入れる。
+全mutation routeがJSON bodyを上限なしで読み込む。Cloudflare側にもrequest body size上限はあるが、上限はアカウントプラン依存（Free/Proは100MB）であり、アプリとしてはそれより十分小さい上限をbodyLimitでroute単位に設定すべき。
 
 **信頼境界がmiddleware構成に表れていない。**
 
@@ -133,11 +133,9 @@ app.on(['POST'], '/api/auth/**', jsonBodyLimit(10 * 1024), authHandler);
 
 ```typescript
 import { cors } from 'hono/cors';
-import { bodyLimit } from 'hono/body-limit';
+import { jsonBodyLimit, BODY_LIMITS } from './middleware/body-limit.ts';
 
 const corsMiddleware = cors({ ... });
-const jsonBodyLimit = (maxSize: number) =>
-  bodyLimit({ maxSize, onError: (c) => c.json({ error: 'payload too large' }, 413) });
 
 const app = new Hono<{ Bindings }>();
 
