@@ -109,9 +109,8 @@ export async function run({ payload, env, init }: FlueContext<unknown, Env>): Pr
 
     // #39: usage累積変数（repair時に上書きされないよう加算で管理）
     const totalUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
-    let attemptCount = 0;
 
-    const accumulateUsage = (usage: typeof totalUsage | undefined) => {
+    const accumulateUsage = (usage: Partial<typeof totalUsage> | undefined) => {
       if (!usage) return;
       totalUsage.input += nonNegative(usage.input);
       totalUsage.output += nonNegative(usage.output);
@@ -123,7 +122,6 @@ export async function run({ payload, env, init }: FlueContext<unknown, Env>): Pr
       signal: AbortSignal.timeout(TIMEOUT_MS),
       thinkingLevel: 'minimal',
     });
-    attemptCount++;
     accumulateUsage(response.usage);
     let decoded = decodeReplies(response.text);
 
@@ -135,7 +133,6 @@ export async function run({ payload, env, init }: FlueContext<unknown, Env>): Pr
         signal: AbortSignal.timeout(TIMEOUT_MS),
         thinkingLevel: 'minimal',
       });
-      attemptCount++;
       accumulateUsage(response.usage);
       decoded = decodeReplies(response.text);
     }
@@ -163,7 +160,6 @@ export async function run({ payload, env, init }: FlueContext<unknown, Env>): Pr
         cacheReadTokens: totalUsage.cacheRead,
         cacheWriteTokens: totalUsage.cacheWrite,
       },
-      attemptCount,
     });
 
     return {
