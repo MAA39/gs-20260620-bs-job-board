@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ThreadsIdRouteImport } from './routes/threads.$id'
+import { Route as ApiSplatRouteImport } from './routes/api/$'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -22,30 +23,39 @@ const ThreadsIdRoute = ThreadsIdRouteImport.update({
   path: '/threads/$id',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiSplatRoute = ApiSplatRouteImport.update({
+  id: '/api/$',
+  path: '/api/$',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/api/$': typeof ApiSplatRoute
   '/threads/$id': typeof ThreadsIdRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/api/$': typeof ApiSplatRoute
   '/threads/$id': typeof ThreadsIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/api/$': typeof ApiSplatRoute
   '/threads/$id': typeof ThreadsIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/threads/$id'
+  fullPaths: '/' | '/api/$' | '/threads/$id'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/threads/$id'
-  id: '__root__' | '/' | '/threads/$id'
+  to: '/' | '/api/$' | '/threads/$id'
+  id: '__root__' | '/' | '/api/$' | '/threads/$id'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  ApiSplatRoute: typeof ApiSplatRoute
   ThreadsIdRoute: typeof ThreadsIdRoute
 }
 
@@ -65,22 +75,21 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ThreadsIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/$': {
+      id: '/api/$'
+      path: '/api/$'
+      fullPath: '/api/$'
+      preLoaderRoute: typeof ApiSplatRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  ApiSplatRoute: ApiSplatRoute,
   ThreadsIdRoute: ThreadsIdRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
-
-import type { getRouter } from './router.tsx'
-import type { createStart } from '@tanstack/react-start'
-declare module '@tanstack/react-start' {
-  interface Register {
-    ssr: true
-    router: Awaited<ReturnType<typeof getRouter>>
-  }
-}

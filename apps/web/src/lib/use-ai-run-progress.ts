@@ -47,7 +47,6 @@ function initialProgress(runId: string | null): AiRunProgress {
 
 export function useAiRunProgress(
   aiRunId: string | null,
-  apiBaseUrl: string,
   onCompleted: () => void,
 ): AiRunProgress {
   const onCompletedRef = useRef(onCompleted);
@@ -76,7 +75,7 @@ export function useAiRunProgress(
     let terminalHandled = false;
 
     const source = new EventSource(
-      `${apiBaseUrl}/api/v1/ai-runs/${encodeURIComponent(runId)}/events?after=0`,
+      `/api/v1/ai-runs/${encodeURIComponent(runId)}/events?after=0`,
     );
 
     const publish = (value: AiRunProgress): boolean => {
@@ -139,7 +138,7 @@ export function useAiRunProgress(
       source.removeEventListener('ai-run', handleEvent);
       source.close();
     };
-  }, [aiRunId, apiBaseUrl]);
+  }, [aiRunId]);
 
   return visibleProgress;
 }

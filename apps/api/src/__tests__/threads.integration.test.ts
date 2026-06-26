@@ -16,11 +16,12 @@ const seedThread = async (threadId: string) => {
     .run();
 };
 
-const makeEnv = () => ({
+const makeEnv = (overrides?: Partial<Record<string, unknown>>) => ({
   DB: database,
   BETTER_AUTH_SECRET: 'test-secret-for-threads-integration',
   INTERNAL_CALLBACK_KEY: 'test-callback-key-for-integration',
   AGENT: { fetch: () => new Response(JSON.stringify({ ok: true }), { status: 200 }) },
+  ...overrides,
 });
 
 const makeExecutionCtx = () => {
@@ -35,20 +36,70 @@ const makeExecutionCtx = () => {
   };
 };
 
+/**
+ * anonymous sign-in して session cookie を取得する。
+ * #29: テスト内で Better Auth session を作るヘルパー。
+ * 複数 Set-Cookie 対応: getAll → getSetCookie → get fallback。
+ */
+const getAnonymousSessionCookie = async (): Promise<string> => {
+  const { ctx, pending } = makeExecutionCtx();
+  const res = await app.request(
+    'http://localhost/api/auth/sign-in/anonymous',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    },
+    makeEnv() as Record<string, unknown>,
+    ctx,
+  );
+  await Promise.allSettled(pending);
+  if (res.status !== 200) {
+    throw new Error(`anonymous sign-in failed: ${res.status} ${await res.text()}`);
+  }
+  // 複数 Set-Cookie に対応: getAll → getSetCookie → get fallback
+  const h = res.headers as Headers & {
+    getAll?: (name: string) => string[];
+    getSetCookie?: () => string[];
+  };
+  let cookies: string[] = [];
+  if (typeof h.getAll === 'function') {
+    cookies = h.getAll('Set-Cookie');
+  } else if (typeof h.getSetCookie === 'function') {
+    cookies = h.getSetCookie();
+  } else {
+    const single = res.headers.get('set-cookie');
+    cookies = single ? [single] : [];
+  }
+  // better-auth.session_token= を含む cookie を探す
+  const sessionCookie = cookies
+    .map((c) => c.split(';')[0])
+    .find((c) => c.startsWith('better-auth.session_token='));
+  if (!sessionCookie) {
+    // fallback: 最初の cookie を使う
+    const first = cookies[0]?.split(';')[0];
+    if (!first) throw new Error('no Set-Cookie in sign-in response');
+    return first;
+  }
+  return sessionCookie;
+};
+
 const postComment = async (
   threadId: string,
   body: unknown,
-  options?: { raw?: boolean },
+  options?: { raw?: boolean; cookie?: string; envOverrides?: Partial<Record<string, unknown>> },
 ) => {
   const { ctx, pending } = makeExecutionCtx();
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (options?.cookie) headers['Cookie'] = options.cookie;
   const res = await app.request(
     `http://localhost/api/v1/threads/${threadId}/posts`,
     {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: options?.raw ? (body as string) : JSON.stringify(body),
     },
-    makeEnv() as Record<string, unknown>,
+    makeEnv(options?.envOverrides) as Record<string, unknown>,
     ctx,
   );
   // Wait for dispatch to settle (no dangling promises)
@@ -67,19 +118,48 @@ const countRows = async (table: string, where?: string): Promise<number> => {
 // ── Tests ───────────────────────────────────────────────
 
 describe('POST /api/v1/threads/:id/posts', () => {
+  // ── #29: Auth fail-closed ──────────────────────────────
+
+  describe('auth fail-closed (#29)', () => {
+    test('no session → 401, no side effects', async () => {
+      const tid = 'thr-noauth';
+      await seedThread(tid);
+      const postsBefore = await countRows('posts');
+      const runsBefore = await countRows('ai_runs');
+
+      const res = await postComment(tid, { body: '認証なし投稿' });
+      expect(res.status).toBe(401);
+      expect((await json(res)).error).toContain('authentication required');
+
+      expect(await countRows('posts')).toBe(postsBefore);
+      expect(await countRows('ai_runs')).toBe(runsBefore);
+    });
+
+    test('missing BETTER_AUTH_SECRET → 503', async () => {
+      const tid = 'thr-nosecret';
+      await seedThread(tid);
+
+      const res = await postComment(tid, { body: '設定不足' }, {
+        envOverrides: { BETTER_AUTH_SECRET: '' },
+      });
+      expect(res.status).toBe(503);
+    });
+  });
+
   // ── Rejection: server-owned fields ─────────────────────
 
   describe('rejects server-owned fields (ADR-004)', () => {
     test('author_type in body → 400, no side effects', async () => {
       const tid = 'thr-spoof-1';
       await seedThread(tid);
+      const cookie = await getAnonymousSessionCookie();
       const postsBefore = await countRows('posts');
       const runsBefore = await countRows('ai_runs');
 
       const res = await postComment(tid, {
         body: 'テスト投稿です',
         author_type: 'ai',
-      });
+      }, { cookie });
       expect(res.status).toBe(400);
       expect((await json(res)).error).toContain('server-owned');
 
@@ -90,23 +170,25 @@ describe('POST /api/v1/threads/:id/posts', () => {
     test('role + source_post_number in body → 400', async () => {
       const tid = 'thr-spoof-2';
       await seedThread(tid);
+      const cookie = await getAnonymousSessionCookie();
 
       const res = await postComment(tid, {
         body: '投稿テスト',
         role: 'thinking',
         source_post_number: 1,
-      });
+      }, { cookie });
       expect(res.status).toBe(400);
     });
 
     test('user_id in body → 400', async () => {
       const tid = 'thr-spoof-3';
       await seedThread(tid);
+      const cookie = await getAnonymousSessionCookie();
 
       const res = await postComment(tid, {
         body: '投稿テスト',
         user_id: 'injected-user',
-      });
+      }, { cookie });
       expect(res.status).toBe(400);
     });
   });
@@ -117,7 +199,8 @@ describe('POST /api/v1/threads/:id/posts', () => {
     test('missing body field → 400', async () => {
       const tid = 'thr-nobody';
       await seedThread(tid);
-      const res = await postComment(tid, {});
+      const cookie = await getAnonymousSessionCookie();
+      const res = await postComment(tid, {}, { cookie });
       expect(res.status).toBe(400);
       expect((await json(res)).error).toContain('body');
     });
@@ -125,33 +208,37 @@ describe('POST /api/v1/threads/:id/posts', () => {
     test('empty string body → 400', async () => {
       const tid = 'thr-empty';
       await seedThread(tid);
-      const res = await postComment(tid, { body: '   ' });
+      const cookie = await getAnonymousSessionCookie();
+      const res = await postComment(tid, { body: '   ' }, { cookie });
       expect(res.status).toBe(400);
     });
 
     test('non-string body → 400', async () => {
       const tid = 'thr-nonstr';
       await seedThread(tid);
-      const res = await postComment(tid, { body: 123 });
+      const cookie = await getAnonymousSessionCookie();
+      const res = await postComment(tid, { body: 123 }, { cookie });
       expect(res.status).toBe(400);
     });
 
     test('non-JSON request → 400', async () => {
       const tid = 'thr-badjson';
       await seedThread(tid);
-      const res = await postComment(tid, 'not json', { raw: true });
+      const cookie = await getAnonymousSessionCookie();
+      const res = await postComment(tid, 'not json', { raw: true, cookie });
       expect(res.status).toBe(400);
     });
   });
 
-  // ── Success: valid human post ──────────────────────────
+  // ── Success: valid human post with session ─────────────
 
   describe('valid post creates human post + queued run', () => {
-    test('{ body } → 201, human post with server-determined fields', async () => {
+    test('authenticated { body } → 201, human post with server-determined fields', async () => {
       const tid = 'thr-valid';
       await seedThread(tid);
+      const cookie = await getAnonymousSessionCookie();
 
-      const res = await postComment(tid, { body: '正常な投稿です' });
+      const res = await postComment(tid, { body: '正常な投稿です' }, { cookie });
       expect(res.status).toBe(201);
       const result = await json(res);
       expect(result.id).toBeDefined();
@@ -165,9 +252,10 @@ describe('POST /api/v1/threads/:id/posts', () => {
         .bind(result.id as string)
         .first<{ author_type: string; author_name: string; role: string | null; source_post_number: number | null; user_id: string | null; body: string }>();
       expect(post?.author_type).toBe('human');
-      expect(post?.author_name).toBe('名無しさん');
       expect(post?.role).toBeNull();
       expect(post?.body).toBe('正常な投稿です');
+      // #29: user_id はsession由来（null ではない）
+      expect(post?.user_id).not.toBeNull();
 
       // Verify ai_run exists and points to this post
       const run = await database

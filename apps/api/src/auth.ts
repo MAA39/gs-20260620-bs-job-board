@@ -31,6 +31,69 @@ export function createAuth(d1: D1Database, config: { secret: string; baseURL: st
 /**
  * リクエストからBetter Authのセッションを取得する
  * cookieまたはAuthorizationヘッダーからtokenを解決
+ *
+ * #29: 例外を握り潰さず、auth_misconfigured / auth_failure / missing_session を区別する
+ */
+
+export type SessionResult =
+  | { ok: true; user: { id: string; name: string } }
+  | { ok: false; reason: 'missing_session' }
+  | { ok: false; reason: 'auth_misconfigured' }
+  | { ok: false; reason: 'auth_failure' };
+
+/**
+ * リバースプロキシ経由のリクエストから元の origin を復元する。
+ * X-Forwarded-Host があればそちらを優先し、なければ fallback を使う。
+ */
+export function resolveExternalBaseURL(
+  request: Request,
+  fallbackBaseURL: string,
+): string {
+  const forwardedHost = request.headers.get('x-forwarded-host');
+  if (!forwardedHost) return fallbackBaseURL;
+
+  // Service Binding 内部 origin からのリクエストのみ forwarded headers を信じる
+  // 外部から直接 API Worker を叩いた場合は偽装防止のため fallback を使う
+  const fallbackHostname = new URL(fallbackBaseURL).hostname;
+  const TRUSTED_INTERNAL = new Set(['api', 'localhost', '127.0.0.1']);
+  if (!TRUSTED_INTERNAL.has(fallbackHostname)) return fallbackBaseURL;
+
+  const forwardedProto = request.headers.get('x-forwarded-proto') ?? 'https';
+  if (forwardedProto !== 'http' && forwardedProto !== 'https') return fallbackBaseURL;
+
+  return `${forwardedProto}://${forwardedHost}`;
+}
+
+export async function getSessionResult(
+  d1: D1Database,
+  secret: string | undefined,
+  baseURL: string,
+  request: Request,
+): Promise<SessionResult> {
+  if (!secret?.trim()) {
+    return { ok: false, reason: 'auth_misconfigured' };
+  }
+
+  const resolvedBaseURL = resolveExternalBaseURL(request, baseURL);
+
+  try {
+    const auth = createAuth(d1, { secret, baseURL: resolvedBaseURL });
+    const session = await auth.api.getSession({ headers: request.headers });
+    if (session?.user) {
+      return { ok: true, user: { id: session.user.id, name: session.user.name } };
+    }
+    return { ok: false, reason: 'missing_session' };
+  } catch (error) {
+    console.error('auth session lookup failed', {
+      name: error instanceof Error ? error.name : 'UnknownError',
+    });
+    return { ok: false, reason: 'auth_failure' };
+  }
+}
+
+/**
+ * 後方互換: 既存のGET route用。sessionなしでもnullを返す。
+ * mutation routeでは getSessionResult を直接使うこと。
  */
 export async function getSessionUser(
   d1: D1Database,
@@ -38,12 +101,6 @@ export async function getSessionUser(
   baseURL: string,
   request: Request,
 ): Promise<{ id: string; name: string } | null> {
-  try {
-    const auth = createAuth(d1, { secret, baseURL });
-    const session = await auth.api.getSession({ headers: request.headers });
-    if (session?.user) {
-      return { id: session.user.id, name: session.user.name };
-    }
-  } catch {}
-  return null;
+  const result = await getSessionResult(d1, secret, baseURL, request);
+  return result.ok ? result.user : null;
 }

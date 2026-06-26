@@ -4,17 +4,11 @@ import { createServerFn } from '@tanstack/react-start';
 import { useState, useEffect, useCallback } from 'react';
 import type { Thread } from '@bs-job-board/contracts';
 import type { CreateThreadResponse } from '@bs-job-board/contracts';
+import { getApi, getAuthenticatedApi } from '../lib/api-fetch';
 
 type ThreadWithReactions = Thread & { reaction_count: number };
 
-async function getApi() {
-  try {
-    const { env } = (await import('cloudflare:workers')) as unknown as { env: { API: { fetch: typeof fetch } } };
-    return (url: string, init?: RequestInit) => env.API.fetch(`https://api${url}`, init);
-  } catch {
-    return (url: string, init?: RequestInit) => fetch(`http://localhost:8787${url}`, init);
-  }
-}
+// ── Server Functions ────────────────────────────────────
 
 const fetchThreads = createServerFn({ method: 'GET' })
   .validator((input: { sort: string }) => input)
@@ -27,41 +21,66 @@ const fetchThreads = createServerFn({ method: 'GET' })
 const createThreadAction = createServerFn({ method: 'POST' })
   .validator((input: { title: string; body: string }) => input)
   .handler(async ({ data }) => {
-    const api = await getApi();
-    return (await (await api('/api/v1/threads', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) })).json()) as CreateThreadResponse;
+    // #29: Cookie/Authorization を API へ転送
+    const api = await getAuthenticatedApi();
+    const r = await api('/api/v1/threads', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    if (!r.ok) {
+      const errBody = await r.json().catch(() => ({})) as { error?: string };
+      throw new Error(errBody.error ?? `create thread failed: ${r.status}`);
+    }
+    return (await r.json()) as CreateThreadResponse;
   });
 
 const reactAction = createServerFn({ method: 'POST' })
   .validator((input: { threadId: string; userId: string }) => input)
   .handler(async ({ data }) => {
     const api = await getApi();
-    return (await (await api(`/api/v1/threads/${data.threadId}/react`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ userId: data.userId }) })).json()) as { reacted: boolean; reaction_count: number };
+    return (await (await api(`/api/v1/threads/${data.threadId}/react`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: data.userId }),
+    })).json()) as { reacted: boolean; reaction_count: number };
   });
 
-function getUserId(): string {
+// ── Auth helpers ────────────────────────────────────────
+
+/**
+ * #29: localStorage を認証根拠にしない。
+ * Better Auth session cookie が存在するかどうかで判定する。
+ * bs-auth-user-id は「表示用キャッシュ」として残すが、
+ * 認証済み判定には使わない。
+ */
+function getCachedUserId(): string {
   if (typeof window === 'undefined') return '';
-  return localStorage.getItem('bs-user-id') ?? '';
+  return localStorage.getItem('bs-auth-user-id') ?? '';
 }
 
-function isAuthenticated(): boolean {
-  if (typeof window === 'undefined') return false;
-  return !!localStorage.getItem('bs-user-id');
-}
+type AuthResult =
+  | { ok: true; userId: string }
+  | { ok: false; message: string };
 
-async function authenticateAnonymous(): Promise<string> {
-  const result = await authClient.signIn.anonymous();
-  if (result.data?.user) {
-    const userId = result.data.user.id;
-    localStorage.setItem('bs-user-id', userId);
-    localStorage.setItem('bs-user-name', result.data.user.name || '名無しさん');
-    return userId;
+async function authenticateAnonymous(): Promise<AuthResult> {
+  try {
+    const result = await authClient.signIn.anonymous();
+    if (result.data?.user) {
+      const userId = result.data.user.id;
+      // 表示用キャッシュのみ。認証根拠ではない。
+      localStorage.setItem('bs-auth-user-id', userId);
+      localStorage.setItem('bs-auth-user-name', result.data.user.name || '名無しさん');
+      return { ok: true, userId };
+    }
+    // #29: UUID fallback しない
+    return { ok: false, message: '匿名認証に失敗しました。通信状態を確認してもう一度お試しください。' };
+  } catch {
+    return { ok: false, message: '匿名認証に失敗しました。通信状態を確認してもう一度お試しください。' };
   }
-  // フォールバック（API接続失敗時）
-  const id = crypto.randomUUID();
-  localStorage.setItem('bs-user-id', id);
-  localStorage.setItem('bs-user-name', '名無しさん');
-  return id;
 }
+
+// ── Route ───────────────────────────────────────────────
 
 export const Route = createFileRoute('/')({
   validateSearch: (s: Record<string, unknown>) => ({ sort: (s.sort as string) ?? 'new' }),
@@ -81,46 +100,82 @@ function HomePage() {
   const [userId, setUserId] = useState('');
 
   useEffect(() => { setThreads(initial); }, [initial]);
-  useEffect(() => { setUserId(getUserId()); }, []);
+  useEffect(() => { setUserId(getCachedUserId()); }, []);
   useEffect(() => {
-    const poll = setInterval(async () => { try { setThreads(await fetchThreads({ data: { sort } })); } catch {} }, 5000);
+    const poll = setInterval(async () => {
+      try { setThreads(await fetchThreads({ data: { sort } })); } catch {}
+    }, 5000);
     return () => clearInterval(poll);
   }, [sort]);
 
   const [showAuthModal, setShowAuthModal] = useState(false);
+  const [authError, setAuthError] = useState('');
+  const [authLoading, setAuthLoading] = useState(false);
   const [pendingAction, setPendingAction] = useState<'post' | null>(null);
 
   const handleSubmit = useCallback(async (e: React.FormEvent) => {
     e.preventDefault();
     if (!title.trim() || !body.trim()) return;
-    if (!isAuthenticated()) { setPendingAction('post'); setShowAuthModal(true); return; }
+    // 常に認証モーダルを出す（認証状態はserver session依存）
+    // ただしcachedUserIdがあれば直接投稿を試みる
+    if (!getCachedUserId()) {
+      setPendingAction('post');
+      setShowAuthModal(true);
+      return;
+    }
     setSubmitting(true);
     try {
-        const result = await createThreadAction({ data: { title: title.trim(), body: body.trim() } });
-        setTitle(''); setBody('');
-        navigate({ to: '/threads/$id', params: { id: result.id }, search: { run: result.ai_run.id } });
+      const result = await createThreadAction({ data: { title: title.trim(), body: body.trim() } });
+      setTitle(''); setBody('');
+      navigate({ to: '/threads/$id', params: { id: result.id }, search: { run: result.ai_run.id } });
+    } catch (error) {
+      // 401 = session切れ → 認証モーダル
+      if (error instanceof Error && error.message.includes('authentication required')) {
+        localStorage.removeItem('bs-auth-user-id');
+        setUserId('');
+        setPendingAction('post');
+        setShowAuthModal(true);
+        return;
       }
-    finally { setSubmitting(false); }
-  }, [title, body, sort]);
+      throw error;
+    } finally {
+      setSubmitting(false);
+    }
+  }, [title, body, sort, navigate]);
 
   const handleAnonymousAuth = useCallback(async () => {
-    const id = await authenticateAnonymous();
-    setUserId(id);
-    setShowAuthModal(false);
-    if (pendingAction === 'post' && title.trim() && body.trim()) {
-      setSubmitting(true);
-      try {
-        const result = await createThreadAction({ data: { title: title.trim(), body: body.trim() } });
-        setTitle(''); setBody('');
-        navigate({ to: '/threads/$id', params: { id: result.id }, search: { run: result.ai_run.id } });
+    setAuthError('');
+    setAuthLoading(true);
+    try {
+      const authResult = await authenticateAnonymous();
+      if (!authResult.ok) {
+        setAuthError(authResult.message);
+        return;
       }
-      finally { setSubmitting(false); }
+      setUserId(authResult.userId);
+      setShowAuthModal(false);
+      if (pendingAction === 'post' && title.trim() && body.trim()) {
+        setSubmitting(true);
+        try {
+          const result = await createThreadAction({ data: { title: title.trim(), body: body.trim() } });
+          setTitle(''); setBody('');
+          navigate({ to: '/threads/$id', params: { id: result.id }, search: { run: result.ai_run.id } });
+        } catch (postError) {
+          setAuthError(postError instanceof Error ? postError.message : '投稿に失敗しました。もう一度お試しください。');
+          setShowAuthModal(true);
+        } finally { setSubmitting(false); }
+      }
+      setPendingAction(null);
+    } finally {
+      setAuthLoading(false);
     }
-    setPendingAction(null);
-  }, [pendingAction, title, body, sort]);
+  }, [pendingAction, title, body, sort, navigate]);
 
   const handleReact = useCallback(async (threadId: string) => {
-    if (!userId) return;
+    if (!userId) {
+      setShowAuthModal(true);
+      return;
+    }
     const r = await reactAction({ data: { threadId, userId } });
     setThreads(prev => prev.map(t => t.id === threadId ? { ...t, reaction_count: r.reaction_count } : t));
   }, [userId]);
@@ -163,17 +218,22 @@ function HomePage() {
 
       {/* 匿名認証モーダル */}
       {showAuthModal && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'grid', placeItems: 'center', zIndex: 100 }} onClick={() => setShowAuthModal(false)}>
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'grid', placeItems: 'center', zIndex: 100 }} onClick={() => { setShowAuthModal(false); setAuthError(''); }}>
           <div className="card" style={{ maxWidth: '360px', margin: '16px', boxShadow: '8px 8px 0 rgba(32,33,29,0.86)' }} onClick={e => e.stopPropagation()}>
             <p className="eyebrow">First post</p>
             <h3 style={{ fontFamily: 'Georgia, serif', margin: '8px 0 16px' }}>投稿するには</h3>
-            <button onClick={handleAnonymousAuth} style={{ width: '100%', marginBottom: '8px' }}>
-              👤 匿名で投稿する
+            {authError && (
+              <p style={{ color: '#c53030', fontSize: '0.85rem', marginBottom: '12px', padding: '8px', background: '#fff5f5', border: '1px solid #feb2b2' }}>
+                {authError}
+              </p>
+            )}
+            <button onClick={handleAnonymousAuth} disabled={authLoading} style={{ width: '100%', marginBottom: '8px' }}>
+              {authLoading ? '認証中...' : '👤 匿名で投稿する'}
             </button>
             <button disabled style={{ width: '100%', background: '#ddd', color: '#999' }}>
               🔗 GitHubでログイン（準備中）
             </button>
-            <p style={{ fontSize: '0.8rem', color: '#888', marginTop: '12px' }}>匿名IDはこのブラウザに保存されます。</p>
+            <p style={{ fontSize: '0.8rem', color: '#888', marginTop: '12px' }}>匿名認証はブラウザ単位のcookieで管理されます。</p>
           </div>
         </div>
       )}

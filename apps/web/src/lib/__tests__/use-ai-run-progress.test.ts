@@ -87,12 +87,11 @@ afterEach(() => {
 // ── Tests ───────────────────────────────────────────────
 
 describe('useAiRunProgress', () => {
-  const API_BASE = 'http://test-api';
 
   test('高1回帰: completed後にaiRunIdがnullに変わるとidleに戻る（別スレッド移動）', () => {
     const onCompleted = vi.fn();
     const { result, rerender } = renderHook(
-      ({ aiRunId }) => useAiRunProgress(aiRunId, API_BASE, onCompleted),
+      ({ aiRunId }) => useAiRunProgress(aiRunId, onCompleted),
       { initialProps: { aiRunId: 'run-1' as string | null } },
     );
 
@@ -116,7 +115,7 @@ describe('useAiRunProgress', () => {
   test('高1回帰: failed後にaiRunIdがnullに変わるとidleに戻る', () => {
     const onCompleted = vi.fn();
     const { result, rerender } = renderHook(
-      ({ aiRunId }) => useAiRunProgress(aiRunId, API_BASE, onCompleted),
+      ({ aiRunId }) => useAiRunProgress(aiRunId, onCompleted),
       { initialProps: { aiRunId: 'run-2' as string | null } },
     );
 
@@ -136,7 +135,7 @@ describe('useAiRunProgress', () => {
   test('高1回帰: 同一スレッド内ではcompleted表示は残る（aiRunIdが変わらない限り）', () => {
     const onCompleted = vi.fn();
     const { result } = renderHook(
-      () => useAiRunProgress('run-1b', API_BASE, onCompleted),
+      () => useAiRunProgress('run-1b', onCompleted),
     );
 
     const source = MockEventSource.latest()!;
@@ -152,7 +151,7 @@ describe('useAiRunProgress', () => {
   test('高2回帰: onerror→onopen後にlastRunStatusへ復元される', () => {
     const onCompleted = vi.fn();
     const { result } = renderHook(
-      () => useAiRunProgress('run-3', API_BASE, onCompleted),
+      () => useAiRunProgress('run-3', onCompleted),
     );
 
     const source = MockEventSource.latest()!;
@@ -175,7 +174,7 @@ describe('useAiRunProgress', () => {
   test('高2回帰: run変更時にlastRunStatusRefがresetされる', () => {
     const onCompleted = vi.fn();
     const { result, rerender } = renderHook(
-      ({ aiRunId }) => useAiRunProgress(aiRunId, API_BASE, onCompleted),
+      ({ aiRunId }) => useAiRunProgress(aiRunId, onCompleted),
       { initialProps: { aiRunId: 'run-4a' as string | null } },
     );
 
@@ -203,7 +202,7 @@ describe('useAiRunProgress', () => {
   test('malformed data: parsePublicAiRunEventがnullを返しても壊れない', () => {
     const onCompleted = vi.fn();
     const { result } = renderHook(
-      () => useAiRunProgress('run-5', API_BASE, onCompleted),
+      () => useAiRunProgress('run-5', onCompleted),
     );
 
     const source = MockEventSource.latest()!;
@@ -230,7 +229,7 @@ describe('useAiRunProgress', () => {
   test('reconnect投稿非再実行: onCompletedはcompleted時の1回のみ', () => {
     const onCompleted = vi.fn();
     renderHook(
-      () => useAiRunProgress('run-6', API_BASE, onCompleted),
+      () => useAiRunProgress('run-6', onCompleted),
     );
 
     const source = MockEventSource.latest()!;
@@ -248,7 +247,7 @@ describe('useAiRunProgress', () => {
   test('unmount時にEventSourceがcloseされる', () => {
     const onCompleted = vi.fn();
     const { unmount } = renderHook(
-      () => useAiRunProgress('run-7', API_BASE, onCompleted),
+      () => useAiRunProgress('run-7', onCompleted),
     );
 
     const source = MockEventSource.latest()!;
@@ -268,7 +267,7 @@ function ProgressPaintProbe(props: {
   runId: string | null;
   onPaint: (status: string) => void;
 }) {
-  const progress = useAiRunProgress(props.runId, 'http://test-api', vi.fn());
+  const progress = useAiRunProgress(props.runId, vi.fn());
   useLayoutEffect(() => {
     props.onPaint(progress.status);
   });
@@ -337,7 +336,7 @@ describe('stale frame paint', () => {
   test('reconnect 中に投稿 API は再実行されない (onCompleted は completed 時のみ)', () => {
     const onCompleted = vi.fn();
     const { result } = renderHook(
-      () => useAiRunProgress('run-recon', 'http://test-api', onCompleted),
+      () => useAiRunProgress('run-recon', onCompleted),
     );
 
     const source = MockEventSource.latest()!;
@@ -356,7 +355,7 @@ describe('stale frame paint', () => {
   test('全status遷移: queued→admitted→generating→repairing→completed', () => {
     const onCompleted = vi.fn();
     const { result } = renderHook(
-      () => useAiRunProgress('run-all', 'http://test-api', onCompleted),
+      () => useAiRunProgress('run-all', onCompleted),
     );
 
     const source = MockEventSource.latest()!;
@@ -385,7 +384,7 @@ describe('PR C: connection + error handling', () => {
   test('EventSource CLOSED → connection_failed', () => {
     const onCompleted = vi.fn();
     const { result } = renderHook(
-      () => useAiRunProgress('run-closed', 'http://test-api', onCompleted),
+      () => useAiRunProgress('run-closed', onCompleted),
     );
     const source = MockEventSource.latest()!;
 
@@ -401,7 +400,7 @@ describe('PR C: connection + error handling', () => {
   test('unknown error_code → failed / AI_RUN_FAILED', () => {
     const onCompleted = vi.fn();
     const { result } = renderHook(
-      () => useAiRunProgress('run-unk-err', 'http://test-api', onCompleted),
+      () => useAiRunProgress('run-unk-err', onCompleted),
     );
     const source = MockEventSource.latest()!;
 
@@ -418,7 +417,7 @@ describe('PR C: connection + error handling', () => {
   test('malformed completed (bad post_ids) → failed / AI_EVENT_INVALID', () => {
     const onCompleted = vi.fn();
     const { result } = renderHook(
-      () => useAiRunProgress('run-bad-completed', 'http://test-api', onCompleted),
+      () => useAiRunProgress('run-bad-completed', onCompleted),
     );
     const source = MockEventSource.latest()!;
 
@@ -435,7 +434,7 @@ describe('PR C: connection + error handling', () => {
   test('terminal後の遅延onerrorでcompleted/failedを上書きしない', () => {
     const onCompleted = vi.fn();
     const { result } = renderHook(
-      () => useAiRunProgress('run-late-err', 'http://test-api', onCompleted),
+      () => useAiRunProgress('run-late-err', onCompleted),
     );
     const source = MockEventSource.latest()!;
 

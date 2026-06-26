@@ -3,7 +3,7 @@ import { cors } from 'hono/cors';
 import { threadRoutes } from './routes/threads.ts';
 import { internalCallbackRoutes } from './routes/internal-callbacks.ts';
 import { aiRunEventRoutes } from './routes/ai-run-events.ts';
-import { createAuth } from './auth.ts';
+import { createAuth, resolveExternalBaseURL } from './auth.ts';
 
 type Bindings = {
   DB: D1Database;
@@ -29,9 +29,10 @@ app.on(['POST', 'GET'], '/api/auth/**', async (c) => {
   if (!c.env?.BETTER_AUTH_SECRET?.trim()) {
     return c.json({ error: 'service not configured' }, 503);
   }
+  const baseURL = resolveExternalBaseURL(c.req.raw, new URL(c.req.url).origin);
   const auth = createAuth(c.env.DB, {
     secret: c.env.BETTER_AUTH_SECRET,
-    baseURL: new URL(c.req.url).origin,
+    baseURL,
   });
   return auth.handler(c.req.raw);
 });
