@@ -43,6 +43,11 @@ const reactAction = createServerFn({ method: 'POST' })
     const r = await api(`/api/v1/threads/${data.threadId}/react`, {
       method: 'POST',
     });
+    // #49 hardening: 401はbodyに依存せず即throw
+    if (r.status === 401) {
+      await r.body?.cancel().catch(() => undefined);
+      throw new Error('authentication required');
+    }
     if (!r.ok) {
       const errBody = await r.json().catch(() => ({})) as { error?: string };
       throw new Error(errBody.error ?? `reaction failed: ${r.status}`);

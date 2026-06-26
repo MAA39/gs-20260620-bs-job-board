@@ -198,31 +198,41 @@ describe('invalid payload', () => {
     expect((await json(res)).error).toContain('64-char hex');
   });
 
-  test('wrong reply count (2 instead of 3) → 400', async () => {
-    const runId = await seedGeneratingRun('2-rep');
-    const bodies = ['テスト本文レスです', 'もう一つのレスです'];
+  test('wrong reply count (0 replies) → 400', async () => {
+    const runId = await seedGeneratingRun('0-rep');
+    const hash = await canonicalHash([]);
+    const res = await callbackRequest(`/${runId}/complete`, {
+      body: { protocolVersion: '1', aiRunId: runId, resultHash: hash, replies: [] },
+    });
+    expect(res.status).toBe(400);
+    expect((await json(res)).error).toContain('1-5');
+  });
+
+  test('wrong reply count (6 replies) → 400', async () => {
+    const runId = await seedGeneratingRun('6-rep');
+    const bodies = Array.from({ length: 6 }, (_, i) => `レス${i + 1}です`);
     const hash = await canonicalHash(bodies);
     const res = await callbackRequest(`/${runId}/complete`, {
       body: { protocolVersion: '1', aiRunId: runId, resultHash: hash, replies: bodies.map((b) => ({ body: b })) },
     });
     expect(res.status).toBe(400);
-    expect((await json(res)).error).toContain('3');
+    expect((await json(res)).error).toContain('1-5');
   });
 
-  test('reply body < 5 chars → 400', async () => {
-    const runId = await seedGeneratingRun('short');
-    const bodies = ['ab', 'テスト本文レスです', 'もう一つのレスだよ'];
+  test('reply body empty (0 chars) → 400', async () => {
+    const runId = await seedGeneratingRun('empty');
+    const bodies = ['', 'テスト本文レスです', 'もう一つのレスだよ'];
     const hash = await canonicalHash(bodies);
     const res = await callbackRequest(`/${runId}/complete`, {
       body: { protocolVersion: '1', aiRunId: runId, resultHash: hash, replies: bodies.map((b) => ({ body: b })) },
     });
     expect(res.status).toBe(400);
-    expect((await json(res)).error).toContain('5-200');
+    expect((await json(res)).error).toContain('1-500');
   });
 
-  test('reply body > 200 chars → 400', async () => {
+  test('reply body > 500 chars → 400', async () => {
     const runId = await seedGeneratingRun('long');
-    const bodies = ['あ'.repeat(201), 'テスト本文レスです', 'もう一つのレスだよ'];
+    const bodies = ['あ'.repeat(501), 'テスト本文レスです', 'もう一つのレスだよ'];
     const hash = await canonicalHash(bodies);
     const res = await callbackRequest(`/${runId}/complete`, {
       body: { protocolVersion: '1', aiRunId: runId, resultHash: hash, replies: bodies.map((b) => ({ body: b })) },
