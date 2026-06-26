@@ -13,6 +13,17 @@ const DEFAULT_BASE_URL = 'https://api.ai.sakura.ad.jp/v1';
 const REPLY_COUNT = 3;
 const TIMEOUT_MS = 45_000;
 
+// ADR-005: validation緩和（件数・文字数）
+const MIN_REPLIES = 1;
+const MAX_REPLIES = 5;
+const MIN_REPLY_LENGTH = 1;
+const MAX_REPLY_LENGTH = 500;
+
+// ADR-005: 最終フォールバック（repair後もvalidation失敗時）
+const FALLBACK_REPLIES = [
+  'ちょっと拾いきれんかったわ。もう少し具体例あるとレスしやすい気がする。',
+];
+
 const SYSTEM_PROMPT = `2chふう匿名掲示板の住民として返答する。
 判断や説教をせず、投稿者の言葉を拾って材料を並べる。
 深掘り質問は全体で最大1つ。AIを名乗らず、>>記号も書かない。
@@ -113,7 +124,10 @@ export async function run({ payload, env, init }: FlueContext<unknown, Env>): Pr
       decoded = decodeReplies(response.text);
     }
 
-    if (!decoded.ok) throw new SafeWorkflowError('AI_OUTPUT_INVALID');
+    // ADR-005: repair後も失敗したらフォールバックレスで続行
+    if (!decoded.ok) {
+      decoded = { ok: true, value: { replies: FALLBACK_REPLIES } };
+    }
 
     const resultHash = await computeHash(JSON.stringify(decoded.value.replies));
 
@@ -228,20 +242,20 @@ function decodeReplies(textValue: string):
   }
 
   const issues: string[] = [];
-  if (value.replies.length !== REPLY_COUNT) issues.push(`expected ${REPLY_COUNT} replies`);
+  // ADR-005: 1-5件に緩和（旧: 3件ちょうど）
+  if (value.replies.length < MIN_REPLIES || value.replies.length > MAX_REPLIES) {
+    issues.push(`expected ${MIN_REPLIES}-${MAX_REPLIES} replies`);
+  }
   const replies = value.replies
     .filter((r): r is string => typeof r === 'string')
     .map((r) => r.trim());
   if (replies.length !== value.replies.length) issues.push('all replies must be strings');
-  if (replies.some((r) => r.length < 5 || r.length > 200)) {
-    issues.push('reply length must be 5-200');
+  // ADR-005: 1-500文字に緩和（旧: 5-200文字）
+  if (replies.some((r) => r.length < MIN_REPLY_LENGTH || r.length > MAX_REPLY_LENGTH)) {
+    issues.push(`reply length must be ${MIN_REPLY_LENGTH}-${MAX_REPLY_LENGTH}`);
   }
-  if (new Set(replies).size !== replies.length) issues.push('replies must be unique');
-  const questionMarks = replies.reduce(
-    (count, r) => count + (r.match(/[?？]/gu)?.length ?? 0),
-    0,
-  );
-  if (questionMarks > 1) issues.push('at most one question is allowed');
+  // ADR-005: ユニーク制約 撤廃
+  // ADR-005: 疑問符制約 撤廃
   if (issues.length > 0) return { ok: false, issues };
   return { ok: true, value: { replies } };
 }
