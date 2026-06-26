@@ -40,10 +40,11 @@ const PROTOCOL_VERSION = '1';
 
 // ── Validation constants ────────────────────────────────
 
-/** Agent contract: exactly 3 replies per callback */
-const EXPECTED_REPLY_COUNT = 3;
-const MIN_REPLY_LENGTH = 5;
-const MAX_REPLY_LENGTH = 200;
+/** ADR-005: 1-5件に緩和（旧: 3件ちょうど） */
+const MIN_REPLY_COUNT = 1;
+const MAX_REPLY_COUNT = 5;
+const MIN_REPLY_LENGTH = 1;
+const MAX_REPLY_LENGTH = 500;
 const HEX_HASH_PATTERN = /^[0-9a-f]{64}$/u;
 
 // ── Helpers ─────────────────────────────────────────────
@@ -155,8 +156,8 @@ export const internalCallbackRoutes = new Hono<{ Bindings: Bindings }>()
     }
 
     // ── replies validation + normalization ──
-    if (!Array.isArray(raw.replies) || raw.replies.length !== EXPECTED_REPLY_COUNT) {
-      return c.json({ error: `invalid payload: exactly ${EXPECTED_REPLY_COUNT} replies required` }, 400);
+    if (!Array.isArray(raw.replies) || raw.replies.length < MIN_REPLY_COUNT || raw.replies.length > MAX_REPLY_COUNT) {
+      return c.json({ error: `invalid payload: ${MIN_REPLY_COUNT}-${MAX_REPLY_COUNT} replies required` }, 400);
     }
     const normalizedBodies: string[] = [];
     for (const reply of raw.replies) {
