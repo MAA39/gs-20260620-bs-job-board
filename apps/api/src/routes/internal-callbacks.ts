@@ -6,6 +6,7 @@ import {
   failRun,
 } from '@bs-job-board/db/ai-pipeline';
 import { DbConflictError, InvalidTransitionError } from '@bs-job-board/db';
+import { jsonBodyLimit, BODY_LIMITS } from '../middleware/body-limit.ts';
 
 // ── Types ───────────────────────────────────────────────
 
@@ -98,7 +99,7 @@ export const internalCallbackRoutes = new Hono<{ Bindings: Bindings }>()
     return next();
   })
 
-  .post('/:aiRunId/generating', async (c) => {
+  .post('/:aiRunId/generating', jsonBodyLimit(BODY_LIMITS.internalSmall), async (c) => {
     const aiRunId = c.req.param('aiRunId');
     try {
       await markRunGenerating({
@@ -116,7 +117,7 @@ export const internalCallbackRoutes = new Hono<{ Bindings: Bindings }>()
     }
   })
 
-  .post('/:aiRunId/repairing', async (c) => {
+  .post('/:aiRunId/repairing', jsonBodyLimit(BODY_LIMITS.internalSmall), async (c) => {
     const aiRunId = c.req.param('aiRunId');
     try {
       await markRunRepairing({
@@ -133,7 +134,7 @@ export const internalCallbackRoutes = new Hono<{ Bindings: Bindings }>()
     }
   })
 
-  .post('/:aiRunId/complete', async (c) => {
+  .post('/:aiRunId/complete', jsonBodyLimit(BODY_LIMITS.internalComplete), async (c) => {
     const aiRunId = c.req.param('aiRunId');
     const raw = await safeParseJson(c);
 
@@ -220,7 +221,7 @@ export const internalCallbackRoutes = new Hono<{ Bindings: Bindings }>()
     }
   })
 
-  .post('/:aiRunId/fail', async (c) => {
+  .post('/:aiRunId/fail', jsonBodyLimit(BODY_LIMITS.internalFail), async (c) => {
     const aiRunId = c.req.param('aiRunId');
     const raw = await safeParseJson(c);
 

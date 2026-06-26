@@ -14,6 +14,7 @@ import {
   getAiGenerationContext,
 } from '@bs-job-board/db/ai-pipeline';
 import { getSessionResult } from '../auth.ts';
+import { jsonBodyLimit, BODY_LIMITS } from '../middleware/body-limit.ts';
 
 // ── Constants ───────────────────────────────────────────
 
@@ -215,7 +216,7 @@ export const threadRoutes = new Hono<{ Bindings: Bindings }>()
     if (!detail) return context.json({ error: 'not found' }, 404);
     return context.json(detail);
   })
-  .post('/', async (context) => {
+  .post('/', jsonBodyLimit(BODY_LIMITS.publicLarge), async (context) => {
     // #29: session 必須 — fail-closed
     const session = await getSessionResult(
       context.env.DB,
@@ -297,7 +298,7 @@ export const threadRoutes = new Hono<{ Bindings: Bindings }>()
 
     return context.json({ id: threadId, title: input.title, ai_run: { id: aiRunId } }, 201);
   })
-  .post('/:id/posts', async (context) => {
+  .post('/:id/posts', jsonBodyLimit(BODY_LIMITS.publicLarge), async (context) => {
     const threadId = context.req.param('id');
 
     // #29: session 必須 — fail-closed
@@ -379,7 +380,7 @@ export const threadRoutes = new Hono<{ Bindings: Bindings }>()
       201,
     );
   })
-  .post('/:id/react', async (context) => {
+  .post('/:id/react', jsonBodyLimit(BODY_LIMITS.publicSmall), async (context) => {
     const threadId = context.req.param('id');
 
     // #49: session必須 — fail-closed
@@ -403,7 +404,7 @@ export const threadRoutes = new Hono<{ Bindings: Bindings }>()
     const result = await toggleReaction(context.env.DB, threadId, session.user.id);
     return context.json({ reacted: result.reacted, reaction_count: result.count });
   })
-  .patch('/:id', async (context) => {
+  .patch('/:id', jsonBodyLimit(BODY_LIMITS.publicSmall), async (context) => {
     const threadId = context.req.param('id');
 
     // #49: session必須 — fail-closed
