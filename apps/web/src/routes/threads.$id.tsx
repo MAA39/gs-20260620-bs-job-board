@@ -41,6 +41,8 @@ const fixThread = createServerFn({ method: 'POST' }).validator((i: { threadId: s
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ status: data.status }),
     });
+    // #49 hardening: 401はbodyに依存せず即throw
+    if (r.status === 401) throw new Error('authentication required');
     if (!r.ok) {
       const errBody = await r.json().catch(() => ({})) as { error?: string };
       throw new Error(errBody.error ?? `status update failed: ${r.status}`);
@@ -239,7 +241,6 @@ function ThreadDetailPageContent({ threadId, initial, aiRunId, navigate }: Conte
       if (cause instanceof Error && cause.message.includes('authentication required')) {
         localStorage.removeItem('bs-auth-user-id');
         setShowAuthModal(true);
-        fixingRef.current = false;
         return;
       }
       setError(cause instanceof Error ? cause.message : 'スレッドの状態更新に失敗しました');

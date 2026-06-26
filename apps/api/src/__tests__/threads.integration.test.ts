@@ -267,3 +267,151 @@ describe('POST /api/v1/threads/:id/posts', () => {
     });
   });
 });
+
+// ── #49: POST /api/v1/threads/:id/react ─────────────────
+
+describe('POST /api/v1/threads/:id/react (#49)', () => {
+  const reactRequest = async (
+    threadId: string,
+    options?: { cookie?: string; body?: string; envOverrides?: Partial<Record<string, unknown>> },
+  ) => {
+    const { ctx, pending } = makeExecutionCtx();
+    const headers: Record<string, string> = {};
+    if (options?.cookie) headers['Cookie'] = options.cookie;
+    if (options?.body) headers['Content-Type'] = 'application/json';
+    const res = await app.request(
+      `http://localhost/api/v1/threads/${threadId}/react`,
+      { method: 'POST', headers, body: options?.body },
+      makeEnv(options?.envOverrides) as Record<string, unknown>,
+      ctx,
+    );
+    await Promise.allSettled(pending);
+    return res;
+  };
+
+  test('no session → 401', async () => {
+    const threadId = crypto.randomUUID();
+    await seedThread(threadId);
+    const res = await reactRequest(threadId);
+    expect(res.status).toBe(401);
+    expect(await json(res)).toEqual({ error: 'authentication required' });
+  });
+
+  test('missing BETTER_AUTH_SECRET → 503', async () => {
+    const threadId = crypto.randomUUID();
+    await seedThread(threadId);
+    const res = await reactRequest(threadId, { envOverrides: { BETTER_AUTH_SECRET: '' } });
+    expect(res.status).toBe(503);
+  });
+
+  test('authenticated → 200 + reaction_count', async () => {
+    const threadId = crypto.randomUUID();
+    await seedThread(threadId);
+    const cookie = await getAnonymousSessionCookie();
+    const res = await reactRequest(threadId, { cookie });
+    expect(res.status).toBe(200);
+    const body = await json(res);
+    expect(body).toHaveProperty('reacted', true);
+    expect(body).toHaveProperty('reaction_count');
+  });
+
+  test('body is ignored — server uses session.user.id', async () => {
+    const threadId = crypto.randomUUID();
+    await seedThread(threadId);
+    const cookie = await getAnonymousSessionCookie();
+    const res = await reactRequest(threadId, {
+      cookie,
+      body: JSON.stringify({ userId: 'fake-attacker-id' }),
+    });
+    expect(res.status).toBe(200);
+    // reaction should be recorded with session user id, not fake id
+    const reaction = await database
+      .prepare('SELECT user_id FROM reactions WHERE thread_id = ?')
+      .bind(threadId)
+      .first<{ user_id: string }>();
+    expect(reaction).not.toBeNull();
+    expect(reaction?.user_id).not.toBe('fake-attacker-id');
+  });
+});
+
+// ── #49: PATCH /api/v1/threads/:id ──────────────────────
+
+describe('PATCH /api/v1/threads/:id (#49)', () => {
+  const patchRequest = async (
+    threadId: string,
+    body: unknown,
+    options?: { cookie?: string; raw?: boolean; envOverrides?: Partial<Record<string, unknown>> },
+  ) => {
+    const { ctx, pending } = makeExecutionCtx();
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (options?.cookie) headers['Cookie'] = options.cookie;
+    const res = await app.request(
+      `http://localhost/api/v1/threads/${threadId}`,
+      {
+        method: 'PATCH',
+        headers,
+        body: options?.raw ? (body as string) : JSON.stringify(body),
+      },
+      makeEnv(options?.envOverrides) as Record<string, unknown>,
+      ctx,
+    );
+    await Promise.allSettled(pending);
+    return res;
+  };
+
+  test('no session → 401', async () => {
+    const threadId = crypto.randomUUID();
+    await seedThread(threadId);
+    const res = await patchRequest(threadId, { status: 'fixed' });
+    expect(res.status).toBe(401);
+    expect(await json(res)).toEqual({ error: 'authentication required' });
+  });
+
+  test('missing BETTER_AUTH_SECRET → 503', async () => {
+    const threadId = crypto.randomUUID();
+    await seedThread(threadId);
+    const res = await patchRequest(threadId, { status: 'fixed' }, { envOverrides: { BETTER_AUTH_SECRET: '' } });
+    expect(res.status).toBe(503);
+  });
+
+  test('authenticated + status=fixed → 200', async () => {
+    const threadId = crypto.randomUUID();
+    await seedThread(threadId);
+    const cookie = await getAnonymousSessionCookie();
+    const res = await patchRequest(threadId, { status: 'fixed' }, { cookie });
+    expect(res.status).toBe(200);
+    const body = await json(res);
+    expect(body).toEqual({ id: threadId, status: 'fixed' });
+    // verify DB
+    const row = await database
+      .prepare('SELECT status FROM threads WHERE id = ?')
+      .bind(threadId)
+      .first<{ status: string }>();
+    expect(row?.status).toBe('fixed');
+  });
+
+  test('invalid status → 400', async () => {
+    const threadId = crypto.randomUUID();
+    await seedThread(threadId);
+    const cookie = await getAnonymousSessionCookie();
+    const res = await patchRequest(threadId, { status: 'invalid' }, { cookie });
+    expect(res.status).toBe(400);
+    expect(await json(res)).toEqual({ error: 'status must be open or fixed' });
+  });
+
+  test('invalid JSON → 400', async () => {
+    const threadId = crypto.randomUUID();
+    await seedThread(threadId);
+    const cookie = await getAnonymousSessionCookie();
+    const res = await patchRequest(threadId, 'not-json', { cookie, raw: true });
+    expect(res.status).toBe(400);
+  });
+
+  test('extra keys → 400', async () => {
+    const threadId = crypto.randomUUID();
+    await seedThread(threadId);
+    const cookie = await getAnonymousSessionCookie();
+    const res = await patchRequest(threadId, { status: 'fixed', malicious: true }, { cookie });
+    expect(res.status).toBe(400);
+  });
+});

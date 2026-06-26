@@ -428,7 +428,12 @@ export const threadRoutes = new Hono<{ Bindings: Bindings }>()
     if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
       return context.json({ error: 'invalid payload' }, 400);
     }
-    const status = (raw as Record<string, unknown>).status;
+    const record = raw as Record<string, unknown>;
+    const extraKeys = Object.keys(record).filter((k) => k !== 'status');
+    if (extraKeys.length > 0) {
+      return context.json({ error: 'server-owned fields are not allowed' }, 400);
+    }
+    const status = record.status;
     if (status !== 'open' && status !== 'fixed') {
       return context.json({ error: 'status must be open or fixed' }, 400);
     }
