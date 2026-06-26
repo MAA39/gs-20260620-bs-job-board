@@ -261,7 +261,7 @@ function registerSakura(env: Env): string {
     api: 'openai-completions',
     baseUrl,
     apiKey,
-    models: { [modelId]: { contextWindow: 0, maxTokens: 1_500 } },
+    models: { [modelId]: { contextWindow: 128_000, maxTokens: 1_500 } },
   });
   return modelId;
 }
