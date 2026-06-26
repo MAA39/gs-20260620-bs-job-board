@@ -229,4 +229,20 @@ describe('ADR-006 bodyLimit (#28)', () => {
     expect(res.status).toBe(401);
     expect(res.headers.get('Access-Control-Allow-Origin')).toBeNull();
   });
+
+  test('POST /api/auth/sign-in/anonymous oversized → 413', async () => {
+    const { ctx, pending } = makeExecutionCtx();
+    const res = await app.request(
+      'http://localhost/api/auth/sign-in/anonymous',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': String(11 * 1024) },
+        body: oversizedBody(11),
+      },
+      makeEnv() as Record<string, unknown>,
+      ctx,
+    );
+    await Promise.allSettled(pending);
+    expect(res.status).toBe(413);
+  });
 });
