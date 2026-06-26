@@ -381,13 +381,58 @@ export const threadRoutes = new Hono<{ Bindings: Bindings }>()
   })
   .post('/:id/react', async (context) => {
     const threadId = context.req.param('id');
-    const { userId } = await context.req.json<{ userId: string }>();
-    if (!userId) return context.json({ error: 'userId required' }, 400);
-    return context.json(await toggleReaction(context.env.DB, threadId, userId));
+
+    // #49: session必須 — fail-closed
+    const session = await getSessionResult(
+      context.env.DB,
+      context.env.BETTER_AUTH_SECRET,
+      new URL(context.req.url).origin,
+      context.req.raw,
+    );
+    if (!session.ok) {
+      if (session.reason === 'auth_misconfigured') {
+        return context.json({ error: 'service not configured' }, 503);
+      }
+      if (session.reason === 'auth_failure') {
+        return context.json({ error: 'authentication service error' }, 500);
+      }
+      return context.json({ error: 'authentication required' }, 401);
+    }
+
+    // #49: userIdはsessionから導出。clientから受け取らない
+    const result = await toggleReaction(context.env.DB, threadId, session.user.id);
+    return context.json({ reacted: result.reacted, reaction_count: result.count });
   })
   .patch('/:id', async (context) => {
     const threadId = context.req.param('id');
-    const { status } = await context.req.json<{ status: 'open' | 'fixed' }>();
+
+    // #49: session必須 — fail-closed
+    const session = await getSessionResult(
+      context.env.DB,
+      context.env.BETTER_AUTH_SECRET,
+      new URL(context.req.url).origin,
+      context.req.raw,
+    );
+    if (!session.ok) {
+      if (session.reason === 'auth_misconfigured') {
+        return context.json({ error: 'service not configured' }, 503);
+      }
+      if (session.reason === 'auth_failure') {
+        return context.json({ error: 'authentication service error' }, 500);
+      }
+      return context.json({ error: 'authentication required' }, 401);
+    }
+
+    // #49: runtime payload validation
+    const raw = await context.req.json<unknown>().catch(() => null);
+    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+      return context.json({ error: 'invalid payload' }, 400);
+    }
+    const status = (raw as Record<string, unknown>).status;
+    if (status !== 'open' && status !== 'fixed') {
+      return context.json({ error: 'status must be open or fixed' }, 400);
+    }
+
     await updateThreadStatus(context.env.DB, threadId, status);
     return context.json({ id: threadId, status });
   });

@@ -35,15 +35,19 @@ const createThreadAction = createServerFn({ method: 'POST' })
     return (await r.json()) as CreateThreadResponse;
   });
 
+// #49: serverがsessionからuserIdを導出。clientからuserIdを送らない
 const reactAction = createServerFn({ method: 'POST' })
-  .validator((input: { threadId: string; userId: string }) => input)
+  .validator((input: { threadId: string }) => input)
   .handler(async ({ data }) => {
-    const api = await getApi();
-    return (await (await api(`/api/v1/threads/${data.threadId}/react`, {
+    const api = await getAuthenticatedApi();
+    const r = await api(`/api/v1/threads/${data.threadId}/react`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId: data.userId }),
-    })).json()) as { reacted: boolean; reaction_count: number };
+    });
+    if (!r.ok) {
+      const errBody = await r.json().catch(() => ({})) as { error?: string };
+      throw new Error(errBody.error ?? `reaction failed: ${r.status}`);
+    }
+    return (await r.json()) as { reacted: boolean; reaction_count: number };
   });
 
 // ── Auth helpers ────────────────────────────────────────
@@ -171,14 +175,24 @@ function HomePage() {
     }
   }, [pendingAction, title, body, sort, navigate]);
 
+  // #49: getCachedUserId() はUX用cache。server sessionが唯一の認証根拠
   const handleReact = useCallback(async (threadId: string) => {
-    if (!userId) {
+    if (!getCachedUserId()) {
       setShowAuthModal(true);
       return;
     }
-    const r = await reactAction({ data: { threadId, userId } });
-    setThreads(prev => prev.map(t => t.id === threadId ? { ...t, reaction_count: r.reaction_count } : t));
-  }, [userId]);
+    try {
+      const r = await reactAction({ data: { threadId } });
+      setThreads(prev => prev.map(t => t.id === threadId ? { ...t, reaction_count: r.reaction_count } : t));
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('authentication required')) {
+        localStorage.removeItem('bs-auth-user-id');
+        setUserId('');
+        setShowAuthModal(true);
+        return;
+      }
+    }
+  }, []);
 
   return (
     <div>
