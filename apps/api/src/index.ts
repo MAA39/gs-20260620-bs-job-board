@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import type { Context } from 'hono';
 import { cors } from 'hono/cors';
 import { threadRoutes } from './routes/threads.ts';
 import { internalCallbackRoutes } from './routes/internal-callbacks.ts';
@@ -35,7 +36,7 @@ app.route('/api/v1/ai-runs', aiRunEventRoutes);
 // ── browser-facing auth API ── CORSあり + POST bodyLimit
 app.use('/api/auth/*', corsMiddleware);
 
-const authHandler = async (c: { env: Bindings; req: { raw: Request; url: string }; json: (data: unknown, status?: number) => Response }) => {
+const authHandler = async (c: Context<{ Bindings: Bindings }>) => {
   if (!c.env?.BETTER_AUTH_SECRET?.trim()) {
     return c.json({ error: 'service not configured' }, 503);
   }
