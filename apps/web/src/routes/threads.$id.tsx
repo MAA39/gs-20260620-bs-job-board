@@ -33,8 +33,12 @@ const addComment = createServerFn({ method: 'POST' }).validator((i: { threadId: 
     return (await r.json()) as CreatePostResponse;
   });
 
-const fixThread = createServerFn({ method: 'POST' }).validator((i: { threadId: string; status: string }) => i)
-  .handler(async ({ data }) => { const api = await getApi(); await api(`/api/v1/threads/${data.threadId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: data.status }) }); });
+const fixThread = createServerFn({ method: 'POST' }).validator((i: { threadId: string; status: 'open' | 'fixed' }) => i)
+  .handler(async ({ data }) => {
+    const api = await getApi();
+    const r = await api(`/api/v1/threads/${data.threadId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: data.status }) });
+    if (!r.ok) throw new Error(`status update failed: ${r.status}`);
+  });
 
 // ── Run search validation ───────────────────────────────
 
@@ -110,10 +114,13 @@ function ThreadDetailPageContent({ threadId, initial, apiBaseUrl, aiRunId, navig
   const [error, setError] = useState('');
 
   // loader更新を同期（key={threadId}と併用でcross-thread問題は再発しない）
-  useEffect(() => { setThread(initial); }, [initial]);
+  const refreshVersionRef = useRef(0);
+  useEffect(() => {
+    refreshVersionRef.current += 1;
+    setThread(initial);
+  }, [initial]);
 
   // ── latest-wins refresh ─────────────────────────────
-  const refreshVersionRef = useRef(0);
   const refreshThread = useCallback(async () => {
     const version = ++refreshVersionRef.current;
     const next = await fetchDetail({ data: { id: threadId } });
@@ -129,12 +136,15 @@ function ThreadDetailPageContent({ threadId, initial, apiBaseUrl, aiRunId, navig
   const [showAuthModal, setShowAuthModal] = useState(false);
   const isAuth = typeof window !== 'undefined' && !!localStorage.getItem('bs-user-id');
 
-  // ── 投稿: 成功と表示同期失敗を分離 ─────────────────
+  // ── 投稿: submittingRefで同期ガード + 成功と表示同期失敗を分離 ──
+  const submittingRef = useRef(false);
   const handleComment = useCallback(async (e: React.FormEvent) => {
     e.preventDefault();
+    if (submittingRef.current) return;
     const body = comment.trim();
     if (!body) return;
     if (!isAuth) { setShowAuthModal(true); return; }
+    submittingRef.current = true;
     setSubmitting(true); setError('');
 
     let result: CreatePostResponse;
@@ -142,6 +152,7 @@ function ThreadDetailPageContent({ threadId, initial, apiBaseUrl, aiRunId, navig
       result = await addComment({ data: { threadId, body } });
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '投稿に失敗しました');
+      submittingRef.current = false;
       setSubmitting(false);
       return;
     }
@@ -154,6 +165,7 @@ function ThreadDetailPageContent({ threadId, initial, apiBaseUrl, aiRunId, navig
     } catch {
       setError('投稿は完了しましたが、画面の更新に失敗しました。再投稿せず再読み込みしてください。');
     } finally {
+      submittingRef.current = false;
       setSubmitting(false);
     }
   }, [comment, threadId, isAuth, navigate, refreshThread]);
@@ -170,8 +182,13 @@ function ThreadDetailPageContent({ threadId, initial, apiBaseUrl, aiRunId, navig
   }, []);
 
   const handleFix = useCallback(async () => {
-    await fixThread({ data: { threadId, status: thread.status === 'fixed' ? 'open' : 'fixed' } });
-    await refreshThread();
+    try {
+      setError('');
+      await fixThread({ data: { threadId, status: thread.status === 'fixed' ? 'open' : 'fixed' } });
+      await refreshThread();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'スレッドの状態更新に失敗しました');
+    }
   }, [thread.status, threadId, refreshThread]);
 
   const displayItems = useMemo(() => {
