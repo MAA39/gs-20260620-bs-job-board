@@ -254,18 +254,34 @@ function ThreadDetailPageContent({ threadId, initial, aiRunId, navigate }: Conte
 
   const displayItems = useMemo(() => {
     const posts = [...thread.posts].sort((a, b) => a.post_number - b.post_number);
+
+    // source_post_number → 子レスのMap（O(n²)の filter → O(1) ルックアップ）
+    const childrenBySource = new Map<number, Post[]>();
+    for (const p of posts) {
+      if (p.source_post_number != null && p.role !== 'thinking') {
+        const arr = childrenBySource.get(p.source_post_number) ?? [];
+        arr.push(p);
+        childrenBySource.set(p.source_post_number, arr);
+      }
+    }
+
     const grouped = new Set<string>();
     const items: Array<{ type: 'post'; post: Post; indent: boolean }> = [];
+    const humanNumbers = posts.filter(p => p.author_type === 'human').map(p => p.post_number);
+
     for (const post of posts) {
       if (grouped.has(post.id) || post.role === 'thinking') continue;
       items.push({ type: 'post', post, indent: false }); grouped.add(post.id);
       if (post.author_type === 'human') {
-        for (const c of posts.filter(p => p.source_post_number === post.post_number && p.role !== 'thinking' && !grouped.has(p.id)))
-          { items.push({ type: 'post', post: c, indent: true }); grouped.add(c.id); }
-        const next = posts.find(p => p.author_type === 'human' && p.post_number > post.post_number);
-        const ceil = next ? next.post_number : Infinity;
-        for (const c of posts.filter(p => !grouped.has(p.id) && p.author_type === 'ai' && p.role !== 'thinking' && p.source_post_number == null && p.post_number > post.post_number && p.post_number < ceil))
-          { items.push({ type: 'post', post: c, indent: true }); grouped.add(c.id); }
+        for (const c of childrenBySource.get(post.post_number) ?? []) {
+          if (!grouped.has(c.id)) { items.push({ type: 'post', post: c, indent: true }); grouped.add(c.id); }
+        }
+        const ceil = humanNumbers.find(n => n > post.post_number) ?? Infinity;
+        for (const c of posts) {
+          if (!grouped.has(c.id) && c.author_type === 'ai' && c.role !== 'thinking' && c.source_post_number == null && c.post_number > post.post_number && c.post_number < ceil) {
+            items.push({ type: 'post', post: c, indent: true }); grouped.add(c.id);
+          }
+        }
       }
     }
     return items;
@@ -287,23 +303,6 @@ function ThreadDetailPageContent({ threadId, initial, aiRunId, navigate }: Conte
           </button>
         </div>
       </div>
-
-      {progressLabel && (
-        <div className="card" role="status" aria-live="polite" style={{
-          marginTop: '8px',
-          background: progress.status === 'failed' || progress.status === 'connection_failed' ? '#fff0f0' : '#f0f5ff',
-          borderLeft: `3px solid ${progress.status === 'failed' || progress.status === 'connection_failed' ? '#c00' : '#4a90d9'}`,
-          padding: '8px 12px', fontSize: '0.85rem',
-        }}>
-          <span style={{ marginRight: '8px' }}>
-            {progress.status === 'generating' || progress.status === 'repairing' ? '🤖' : progress.status === 'failed' || progress.status === 'connection_failed' ? '⚠️' : progress.status === 'completed' ? '✅' : '⏳'}
-          </span>
-          {progressLabel}
-          {progress.status === 'connection_failed' && (
-            <button onClick={() => window.location.reload()} style={{ marginLeft: '8px', fontSize: '0.8rem' }}>再読み込み</button>
-          )}
-        </div>
-      )}
 
       <div className="section-header"><span>Posts</span><span>{thread.posts.filter(p => p.role !== 'thinking').length}件</span></div>
 
