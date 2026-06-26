@@ -198,7 +198,7 @@ function ThreadDetailPageContent({ threadId, initial, aiRunId, navigate }: Conte
     // ここから先は投稿済み。再投稿を防ぐ。
     setComment('');
     try {
-      await navigate({ to: '/threads/$id', params: { id: threadId }, search: { run: result.ai_run.id }, replace: true });
+      await navigate({ to: '/threads/$id', params: { id: threadId }, search: { run: result.ai_run.id }, replace: true, resetScroll: false });
       await refreshThread();
     } catch {
       setError('投稿は完了しましたが、画面の更新に失敗しました。再投稿せず再読み込みしてください。');
@@ -310,6 +310,19 @@ function ThreadDetailPageContent({ threadId, initial, aiRunId, navigate }: Conte
 
       <div className="card" style={{ marginTop: '16px' }}>
         <p className="eyebrow">Reply</p>
+        {progressLabel && (
+          <div role="status" aria-live="polite" style={{
+            marginTop: '8px',
+            background: progress.status === 'failed' || progress.status === 'connection_failed' ? '#fff0f0' : '#f0f5ff',
+            borderLeft: `3px solid ${progress.status === 'failed' || progress.status === 'connection_failed' ? '#c00' : '#4a90d9'}`,
+            padding: '6px 10px', fontSize: '0.8rem', borderRadius: '2px',
+          }}>
+            <span style={{ marginRight: '6px' }}>
+              {progress.status === 'generating' || progress.status === 'repairing' ? '🤖' : progress.status === 'failed' || progress.status === 'connection_failed' ? '⚠️' : progress.status === 'completed' ? '✅' : '⏳'}
+            </span>
+            {progressLabel}
+          </div>
+        )}
         <form onSubmit={handleComment} style={{ marginTop: '8px' }}>
           <input value={comment} onChange={e => setComment(e.target.value)} placeholder="名無しさんとしてレスを書く" required />
           <button type="submit" disabled={submitting}>{submitting ? '送信中...' : 'レスする'}</button>
