@@ -29,9 +29,15 @@ app.on(['POST', 'GET'], '/api/auth/**', async (c) => {
   if (!c.env?.BETTER_AUTH_SECRET?.trim()) {
     return c.json({ error: 'service not configured' }, 503);
   }
+  // #29: reverse proxy 経由の場合、X-Forwarded-Host から元の origin を復元する
+  const forwardedHost = c.req.header('x-forwarded-host');
+  const forwardedProto = c.req.header('x-forwarded-proto') ?? 'https';
+  const baseURL = forwardedHost
+    ? `${forwardedProto}://${forwardedHost}`
+    : new URL(c.req.url).origin;
   const auth = createAuth(c.env.DB, {
     secret: c.env.BETTER_AUTH_SECRET,
-    baseURL: new URL(c.req.url).origin,
+    baseURL,
   });
   return auth.handler(c.req.raw);
 });

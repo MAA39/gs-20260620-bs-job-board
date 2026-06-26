@@ -4,9 +4,6 @@
   "compatibility_date": "2026-06-01",
   "compatibility_flags": ["nodejs_compat"],
   "main": "@tanstack/react-start/server-entry",
-  "vars": {
-    "API_BASE_URL": "https://bs-job-board-api.masa-nekoshinshi39.workers.dev"
-  },
   "services": [
     {
       "binding": "API",

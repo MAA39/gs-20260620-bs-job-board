@@ -4,39 +4,43 @@ import { createServerFn } from '@tanstack/react-start';
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import type { ThreadDetail, Post, CreatePostResponse } from '@bs-job-board/contracts';
 import { useAiRunProgress, getProgressLabel } from '../lib/use-ai-run-progress';
+import { getApi, getAuthenticatedApi } from '../lib/api-fetch';
 
-async function getApi() {
-  try {
-    const { env } = (await import('cloudflare:workers')) as unknown as { env: { API: { fetch: typeof fetch }; API_BASE_URL?: string } };
-    return (url: string, init?: RequestInit) => env.API.fetch(`https://api${url}`, init);
-  } catch {
-    return (url: string, init?: RequestInit) => fetch(`http://localhost:8787${url}`, init);
-  }
-}
-
-const resolveApiBaseUrl = createServerFn({ method: 'GET' })
-  .handler(async () => {
-    try {
-      const { env } = (await import('cloudflare:workers')) as unknown as { env: { API_BASE_URL?: string } };
-      return env.API_BASE_URL || 'http://localhost:8787';
-    } catch { return 'http://localhost:8787'; }
-  });
+// ── Server Functions ────────────────────────────────────
 
 const fetchDetail = createServerFn({ method: 'GET' }).validator((i: { id: string }) => i)
-  .handler(async ({ data }) => { const api = await getApi(); const r = await api(`/api/v1/threads/${data.id}`); if (!r.ok) throw new Error('not found'); return (await r.json()) as ThreadDetail; });
+  .handler(async ({ data }) => {
+    const api = await getApi();
+    const r = await api(`/api/v1/threads/${data.id}`);
+    if (!r.ok) throw new Error('not found');
+    return (await r.json()) as ThreadDetail;
+  });
 
 const addComment = createServerFn({ method: 'POST' }).validator((i: { threadId: string; body: string }) => i)
   .handler(async ({ data }) => {
-    const api = await getApi();
-    const r = await api(`/api/v1/threads/${data.threadId}/posts`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ body: data.body }) });
-    if (!r.ok) throw new Error(`post failed: ${r.status}`);
+    // #29: Cookie/Authorization を API へ転送
+    const api = await getAuthenticatedApi();
+    const r = await api(`/api/v1/threads/${data.threadId}/posts`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ body: data.body }),
+    });
+    if (!r.ok) {
+      const errBody = await r.json().catch(() => ({ error: 'unknown' })) as { error?: string };
+      throw new Error(errBody.error ?? `post failed: ${r.status}`);
+    }
     return (await r.json()) as CreatePostResponse;
   });
 
 const fixThread = createServerFn({ method: 'POST' }).validator((i: { threadId: string; status: 'open' | 'fixed' }) => i)
   .handler(async ({ data }) => {
-    const api = await getApi();
-    const r = await api(`/api/v1/threads/${data.threadId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: data.status }) });
+    // #29: Cookie/Authorization を API へ転送
+    const api = await getAuthenticatedApi();
+    const r = await api(`/api/v1/threads/${data.threadId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: data.status }),
+    });
     try {
       if (!r.ok) throw new Error(`status update failed: ${r.status}`);
     } finally {
@@ -53,12 +57,10 @@ export const Route = createFileRoute('/threads/$id')({
   validateSearch: (s: Record<string, unknown>): SearchParams => ({
     run: typeof s.run === 'string' && UUID_RE.test(s.run) ? s.run : undefined,
   }),
+  // #29: apiBaseUrl 撤去。SSE は same-origin /api/v1/... を使う。
   loader: async ({ params }) => {
-    const [detail, apiBaseUrl] = await Promise.all([
-      fetchDetail({ data: { id: params.id } }),
-      resolveApiBaseUrl(),
-    ]);
-    return { detail, apiBaseUrl };
+    const detail = await fetchDetail({ data: { id: params.id } });
+    return { detail };
   },
   component: ThreadDetailPage,
 });
@@ -84,10 +86,35 @@ function useSerialPolling(task: () => Promise<void>, intervalMs: number) {
   }, [intervalMs]);
 }
 
+// ── Auth helpers ────────────────────────────────────────
+
+function getCachedUserId(): string {
+  if (typeof window === 'undefined') return '';
+  return localStorage.getItem('bs-auth-user-id') ?? '';
+}
+
+type AuthResult =
+  | { ok: true; userId: string }
+  | { ok: false; message: string };
+
+async function authenticateAnonymous(): Promise<AuthResult> {
+  try {
+    const result = await authClient.signIn.anonymous();
+    if (result.data?.user) {
+      localStorage.setItem('bs-auth-user-id', result.data.user.id);
+      localStorage.setItem('bs-auth-user-name', result.data.user.name || '名無しさん');
+      return { ok: true, userId: result.data.user.id };
+    }
+    return { ok: false, message: '匿名認証に失敗しました。通信状態を確認してもう一度お試しください。' };
+  } catch {
+    return { ok: false, message: '匿名認証に失敗しました。通信状態を確認してもう一度お試しください。' };
+  }
+}
+
 // ── Keyed wrapper ───────────────────────────────────────
 
 function ThreadDetailPage() {
-  const { detail, apiBaseUrl } = Route.useLoaderData();
+  const { detail } = Route.useLoaderData();
   const { id: threadId } = Route.useParams();
   const { run } = Route.useSearch();
   const navigate = useNavigate();
@@ -96,7 +123,6 @@ function ThreadDetailPage() {
       key={threadId}
       threadId={threadId}
       initial={detail}
-      apiBaseUrl={apiBaseUrl}
       aiRunId={run ?? null}
       navigate={navigate}
     />
@@ -106,12 +132,11 @@ function ThreadDetailPage() {
 type ContentProps = {
   threadId: string;
   initial: ThreadDetail;
-  apiBaseUrl: string;
   aiRunId: string | null;
   navigate: ReturnType<typeof useNavigate>;
 };
 
-function ThreadDetailPageContent({ threadId, initial, apiBaseUrl, aiRunId, navigate }: ContentProps) {
+function ThreadDetailPageContent({ threadId, initial, aiRunId, navigate }: ContentProps) {
   const [thread, setThread] = useState(initial);
   const [comment, setComment] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -131,14 +156,15 @@ function ThreadDetailPageContent({ threadId, initial, apiBaseUrl, aiRunId, navig
     if (version === refreshVersionRef.current) setThread(next);
   }, [threadId]);
 
-  // ── SSE進捗 ─────────────────────────────────────────
-  const progress = useAiRunProgress(aiRunId, apiBaseUrl, refreshThread);
+  // ── SSE進捗: same-origin 化（apiBaseUrl 引数なし）────
+  const progress = useAiRunProgress(aiRunId, refreshThread);
 
   // ── Serial polling（detail のみ）────────────────────
   useSerialPolling(refreshThread, 5_000);
 
   const [showAuthModal, setShowAuthModal] = useState(false);
-  const isAuth = typeof window !== 'undefined' && !!localStorage.getItem('bs-user-id');
+  const [authError, setAuthError] = useState('');
+  const [authLoading, setAuthLoading] = useState(false);
 
   // ── 投稿: submittingRefで同期ガード + 成功と表示同期失敗を分離 ──
   const submittingRef = useRef(false);
@@ -147,7 +173,7 @@ function ThreadDetailPageContent({ threadId, initial, apiBaseUrl, aiRunId, navig
     if (submittingRef.current) return;
     const body = comment.trim();
     if (!body) return;
-    if (!isAuth) { setShowAuthModal(true); return; }
+    if (!getCachedUserId()) { setShowAuthModal(true); return; }
     submittingRef.current = true;
     setSubmitting(true); setError('');
 
@@ -155,6 +181,14 @@ function ThreadDetailPageContent({ threadId, initial, apiBaseUrl, aiRunId, navig
     try {
       result = await addComment({ data: { threadId, body } });
     } catch (cause) {
+      // 401 = session切れ → 認証モーダル
+      if (cause instanceof Error && cause.message.includes('authentication required')) {
+        localStorage.removeItem('bs-auth-user-id');
+        setShowAuthModal(true);
+        submittingRef.current = false;
+        setSubmitting(false);
+        return;
+      }
       setError(cause instanceof Error ? cause.message : '投稿に失敗しました');
       submittingRef.current = false;
       setSubmitting(false);
@@ -172,17 +206,22 @@ function ThreadDetailPageContent({ threadId, initial, apiBaseUrl, aiRunId, navig
       submittingRef.current = false;
       setSubmitting(false);
     }
-  }, [comment, threadId, isAuth, navigate, refreshThread]);
+  }, [comment, threadId, navigate, refreshThread]);
 
   const handleAnonAuth = useCallback(async () => {
+    setAuthError('');
+    setAuthLoading(true);
     try {
-      const result = await authClient.signIn.anonymous();
-      if (result.data?.user) {
-        localStorage.setItem('bs-user-id', result.data.user.id);
-        localStorage.setItem('bs-user-name', result.data.user.name || '名無しさん');
-      } else { const id = crypto.randomUUID(); localStorage.setItem('bs-user-id', id); localStorage.setItem('bs-user-name', '名無しさん'); }
-    } catch { const id = crypto.randomUUID(); localStorage.setItem('bs-user-id', id); localStorage.setItem('bs-user-name', '名無しさん'); }
-    setShowAuthModal(false);
+      const authResult = await authenticateAnonymous();
+      if (!authResult.ok) {
+        setAuthError(authResult.message);
+        return;
+      }
+      setShowAuthModal(false);
+      // #29: 認証成功後に自動再投稿しない。モーダルを閉じてユーザーが再投稿。
+    } finally {
+      setAuthLoading(false);
+    }
   }, []);
 
   const fixingRef = useRef(false);
@@ -278,13 +317,22 @@ function ThreadDetailPageContent({ threadId, initial, apiBaseUrl, aiRunId, navig
       </div>
 
       {showAuthModal && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'grid', placeItems: 'center', zIndex: 100 }} onClick={() => setShowAuthModal(false)}>
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'grid', placeItems: 'center', zIndex: 100 }} onClick={() => { setShowAuthModal(false); setAuthError(''); }}>
           <div className="card" style={{ maxWidth: '360px', margin: '16px', boxShadow: '8px 8px 0 rgba(32,33,29,0.86)' }} onClick={e => e.stopPropagation()}>
             <p className="eyebrow">First post</p>
             <h3 style={{ fontFamily: 'Georgia, serif', margin: '8px 0 16px' }}>投稿するには</h3>
-            <button onClick={handleAnonAuth} style={{ width: '100%', marginBottom: '8px' }}>👤 匿名で投稿する</button>
-            <button disabled style={{ width: '100%', background: '#ddd', color: '#999' }}>🔗 GitHubでログイン（準備中）</button>
-            <p style={{ fontSize: '0.8rem', color: '#888', marginTop: '12px' }}>匿名IDはこのブラウザに保存されます。</p>
+            {authError && (
+              <p style={{ color: '#c53030', fontSize: '0.85rem', marginBottom: '12px', padding: '8px', background: '#fff5f5', border: '1px solid #feb2b2' }}>
+                {authError}
+              </p>
+            )}
+            <button onClick={handleAnonAuth} disabled={authLoading} style={{ width: '100%', marginBottom: '8px' }}>
+              {authLoading ? '認証中...' : '👤 匿名で投稿する'}
+            </button>
+            <button disabled style={{ width: '100%', background: '#ddd', color: '#999' }}>
+              🔗 GitHubでログイン（準備中）
+            </button>
+            <p style={{ fontSize: '0.8rem', color: '#888', marginTop: '12px' }}>匿名認証はブラウザ単位のcookieで管理されます。</p>
           </div>
         </div>
       )}

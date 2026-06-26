@@ -13,7 +13,8 @@ import {
   getAiRunById,
   getAiGenerationContext,
 } from '@bs-job-board/db/ai-pipeline';
-import { getSessionUser } from '../auth.ts';
+import { getSessionResult } from '../auth.ts';
+import type { SessionResult } from '../auth.ts';
 
 // ── Constants ───────────────────────────────────────────
 
@@ -216,17 +217,28 @@ export const threadRoutes = new Hono<{ Bindings: Bindings }>()
     return context.json(detail);
   })
   .post('/', async (context) => {
-    const input = await context.req.json<{ title: string; body: string }>();
-
-    const sessionUser = await getSessionUser(
+    // #29: session 必須 — fail-closed
+    const session = await getSessionResult(
       context.env.DB,
-      context.env.BETTER_AUTH_SECRET || '',
+      context.env.BETTER_AUTH_SECRET,
       new URL(context.req.url).origin,
       context.req.raw,
     );
+    if (!session.ok) {
+      if (session.reason === 'auth_misconfigured') {
+        return context.json({ error: 'service not configured' }, 503);
+      }
+      if (session.reason === 'auth_failure') {
+        return context.json({ error: 'authentication service error' }, 500);
+      }
+      return context.json({ error: 'authentication required' }, 401);
+    }
+
+    const input = await context.req.json<{ title: string; body: string }>();
+
     const authorName =
-      sessionUser?.name && sessionUser.name !== 'Anonymous'
-        ? sessionUser.name
+      session.user.name && session.user.name !== 'Anonymous'
+        ? session.user.name
         : '名無しさん';
 
     const threadId = crypto.randomUUID();
@@ -242,7 +254,7 @@ export const threadRoutes = new Hono<{ Bindings: Bindings }>()
     await createThreadWithInitialPostAndQueuedRun({
       db: context.env.DB as unknown as Parameters<typeof createThreadWithInitialPostAndQueuedRun>[0]['db'],
       thread: { id: threadId, title: input.title, body: input.body },
-      post: { id: postId, authorName, userId: sessionUser?.id ?? null },
+      post: { id: postId, authorName, userId: session.user.id },
       aiRun: {
         id: aiRunId,
         idempotencyKey,
@@ -267,6 +279,23 @@ export const threadRoutes = new Hono<{ Bindings: Bindings }>()
   .post('/:id/posts', async (context) => {
     const threadId = context.req.param('id');
 
+    // #29: session 必須 — fail-closed
+    const session = await getSessionResult(
+      context.env.DB,
+      context.env.BETTER_AUTH_SECRET,
+      new URL(context.req.url).origin,
+      context.req.raw,
+    );
+    if (!session.ok) {
+      if (session.reason === 'auth_misconfigured') {
+        return context.json({ error: 'service not configured' }, 503);
+      }
+      if (session.reason === 'auth_failure') {
+        return context.json({ error: 'authentication service error' }, 500);
+      }
+      return context.json({ error: 'authentication required' }, 401);
+    }
+
     // Strict payload validation: only { body: string } accepted (ADR-004)
     const raw = await context.req.json<unknown>().catch(() => null);
     if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
@@ -282,18 +311,11 @@ export const threadRoutes = new Hono<{ Bindings: Bindings }>()
     }
     const body = record.body.trim();
 
-    const sessionUser = await getSessionUser(
-      context.env.DB,
-      context.env.BETTER_AUTH_SECRET || '',
-      new URL(context.req.url).origin,
-      context.req.raw,
-    );
-
     const authorName =
-      sessionUser?.name && sessionUser.name !== 'Anonymous'
-        ? sessionUser.name
+      session.user.name && session.user.name !== 'Anonymous'
+        ? session.user.name
         : '名無しさん';
-    const userId = sessionUser?.id ?? null;
+    const userId = session.user.id;
 
     // ADR-004: 公開routeは常にhuman post。AI postはinternal callbackのみ
     const postId = crypto.randomUUID();
