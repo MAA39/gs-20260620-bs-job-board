@@ -41,11 +41,11 @@ const fixThread = createServerFn({ method: 'POST' }).validator((i: { threadId: s
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ status: data.status }),
     });
-    try {
-      if (!r.ok) throw new Error(`status update failed: ${r.status}`);
-    } finally {
-      await r.body?.cancel().catch(() => undefined);
+    if (!r.ok) {
+      const errBody = await r.json().catch(() => ({})) as { error?: string };
+      throw new Error(errBody.error ?? `status update failed: ${r.status}`);
     }
+    await r.body?.cancel().catch(() => undefined);
   });
 
 // ── Run search validation ───────────────────────────────
@@ -227,12 +227,21 @@ function ThreadDetailPageContent({ threadId, initial, aiRunId, navigate }: Conte
   const fixingRef = useRef(false);
   const handleFix = useCallback(async () => {
     if (fixingRef.current) return;
+    // #49: getCachedUserId() はUX用cache。server sessionが唯一の認証根拠
+    if (!getCachedUserId()) { setShowAuthModal(true); return; }
     fixingRef.current = true;
     try {
       setError('');
       await fixThread({ data: { threadId, status: thread.status === 'fixed' ? 'open' : 'fixed' } });
       await refreshThread();
     } catch (cause) {
+      // #49: authentication required → session切れ → 認証モーダル
+      if (cause instanceof Error && cause.message.includes('authentication required')) {
+        localStorage.removeItem('bs-auth-user-id');
+        setShowAuthModal(true);
+        fixingRef.current = false;
+        return;
+      }
       setError(cause instanceof Error ? cause.message : 'スレッドの状態更新に失敗しました');
     } finally {
       fixingRef.current = false;
