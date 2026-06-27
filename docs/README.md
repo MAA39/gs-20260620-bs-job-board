@@ -16,6 +16,15 @@
 - `adr/005-ai-output-validation-relaxation.md`: AI出力validation緩和 + フォールバック
 - `adr/006-api-boundary-bodylimit-cors.md`: bodyLimit + CORS適用範囲の分離
 
+## コード解説（発表用）
+
+- [`code-walkthrough.md`](code-walkthrough.md): コードベース全体の概要（ディレクトリ・定量データ・フロー図）
+- [`details/web-worker.md`](details/web-worker.md): Web Worker — SSR・proxy・SSE Hook・認証クライアント
+- [`details/api-worker.md`](details/api-worker.md): API Worker — 3境界・CRUD・dispatch・callback・SSE配信
+- [`details/agent-worker.md`](details/agent-worker.md): Agent Worker — Flue・workflow・validation・さくらAI
+- [`details/packages.md`](details/packages.md): packages — db(スキーマ・状態機械)・contracts(型)・agent(プロンプト)
+- [`details/what-went-wrong.md`](details/what-went-wrong.md): うまくいかなかったこと10件 + うまくいったこと5件
+
 ## その他
 
 - `architecture-audit.md`: V1 mainの監査結果と改修計画
