@@ -21,9 +21,12 @@ function RootShell({ children }: { children: React.ReactNode }) {
       </head>
       <body>
         <header>
-          <div className="container">
-            <p className="eyebrow">BS Job Board</p>
-            <h1><Link to="/" search={{ sort: 'new' }} style={{ color: '#20211d', textDecoration: 'none' }}>ブルシット・ジョブ解体掲示板</Link></h1>
+          <div className="container" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div>
+              <p className="eyebrow">BS Job Board</p>
+              <h1><Link to="/" search={{ sort: 'new' }} style={{ color: '#20211d', textDecoration: 'none' }}>ブルシット・ジョブ解体掲示板</Link></h1>
+            </div>
+            <a href="https://github.com/MAA39/gs-20260620-bs-job-board" target="_blank" rel="noopener noreferrer" style={{ border: '2px solid #20211d', background: '#fffaf0', padding: '6px 12px', fontSize: '13px', fontWeight: 900, color: '#20211d', textDecoration: 'none', whiteSpace: 'nowrap' }}>GitHub ↗</a>
           </div>
         </header>
         <main className="container">{children}</main>
